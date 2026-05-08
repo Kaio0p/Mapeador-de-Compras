@@ -14,9 +14,10 @@ Mapeamento do template:
   Dados (linhas 11-53):
     E=Item  F=Marca  G=Qtd  H=UND
     I=Forn1  J=Forn2  K=Forn3  L=Forn4
+    P=Preço Autorizado (preenchido quando um fornecedor é aprovado)
     R=Observação
 
-  Fórmulas intocadas: N(menor preço), O(total menor), P(autorizado), Q(total aut), totais linha 54
+  Fórmulas intocadas: N(menor preço), O(total menor), Q(total aut), totais linha 54
 """
 import io, os
 from datetime import date
@@ -30,7 +31,7 @@ _TEMPLATE_PATH = os.path.join(
 DATA_START = 11
 DATA_END   = 53
 SUP_COLS   = ["I", "J", "K", "L"]
-DATA_COLS  = ["E", "F", "G", "H", "I", "J", "K", "L", "R"]
+DATA_COLS  = ["E", "F", "G", "H", "I", "J", "K", "L", "P", "R"]
 
 
 def generate_excel(
@@ -40,7 +41,21 @@ def generate_excel(
     filial,
     responsavel,
     data_compra,
+    approved_supplier=None,
 ):
+    """
+    Gera o Excel do Mapa de Compras a partir do template.
+    
+    Args:
+        items: Lista de itens normalizados
+        supplier_names: Lista com nomes dos fornecedores
+        numero_sequencial: Número sequencial do mapa
+        filial: Nome da filial
+        responsavel: Nome do responsável
+        data_compra: Data da compra
+        approved_supplier: Nome do fornecedor aprovado (opcional).
+            Se fornecido, preenche a coluna P (Preço Autorizado) com os preços desse fornecedor.
+    """
     wb = openpyxl.load_workbook(_TEMPLATE_PATH)
     ws = wb.active
 
@@ -79,6 +94,14 @@ def generate_excel(
             fdata = fornecedores.get(fname) or {}
             price = fdata.get("preco_unit")
             ws[f"{col}{row}"] = float(price) if price is not None else None
+
+        # Preço Autorizado (coluna P) — se um fornecedor foi aprovado
+        if approved_supplier and approved_supplier in fornecedores:
+            fdata = fornecedores.get(approved_supplier) or {}
+            approved_price = fdata.get("preco_unit")
+            ws[f"P{row}"] = float(approved_price) if approved_price is not None else None
+        else:
+            ws[f"P{row}"] = None
 
         # Observação consolidada
         obs_parts = []
