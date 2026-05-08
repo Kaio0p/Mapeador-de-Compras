@@ -14,7 +14,7 @@ if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 from modules.pdf_extractor   import extract_text_from_pdf, extract_images_from_pdf, get_pdf_page_count
-from modules.gemini_processor import configure as configure_gemini, extract_items_from_text, extract_items_from_images, normalize_and_match
+from modules.gemini_processor import configure as configure_gemini, extract_items_from_text, extract_items_from_images, normalize_and_match, ALLOWED_UNITS
 from modules.excel_generator  import generate_excel
 from modules.preferences_manager import (
     detect_corrections, merge_corrections, build_prompt_context,
@@ -433,6 +433,7 @@ def init_state():
         "preferences": {"corrections": [], "version": 1},
         "preferences_context": "",
         "prefs_loaded": False,
+        "approved_supplier": None,
     }.items():
         if k not in st.session_state:
             st.session_state[k] = v
@@ -519,7 +520,7 @@ with st.sidebar:
             unsafe_allow_html=True
         )
 
-        st.markdown("### Fornecedores")
+    st.markdown("### Fornecedores")
     n_suppliers = st.radio("Quantidade", [3, 4], horizontal=True)
 
     supplier_names = []
@@ -528,7 +529,22 @@ with st.sidebar:
                              placeholder=f"Nome do fornecedor {i+1}")
         supplier_names.append(name)
 
-    st.markdown('<div style="margin-top:2rem;font-size:0.72rem;color:#C7C7CC;text-align:center;">v1.0 · 2026</div>', unsafe_allow_html=True)
+    # ── Orçamento Aprovado (opcional) ──
+    st.markdown("### Orçamento Aprovado")
+    active_suppliers_sidebar = [s for s in supplier_names if s]
+    approved_options = ["Nenhum (não preencher)"] + active_suppliers_sidebar
+    approved_selection = st.selectbox(
+        "Fornecedor aprovado",
+        options=approved_options,
+        index=0,
+        help="Se selecionado, a coluna 'Preço Autorizado' será preenchida automaticamente com os preços deste fornecedor."
+    )
+    if approved_selection == "Nenhum (não preencher)":
+        st.session_state.approved_supplier = None
+    else:
+        st.session_state.approved_supplier = approved_selection
+
+    st.markdown('<div style="margin-top:2rem;font-size:0.72rem;color:#C7C7CC;text-align:center;">v1.1 · 2026</div>', unsafe_allow_html=True)
 
 
 # ── Helpers UI ────────────────────────────────────────────────────────────────
@@ -598,7 +614,7 @@ if step == 1:
 
     st.markdown('<div class="ref-label">Lista de referência (opcional)</div>', unsafe_allow_html=True)
     st.caption("Cole os itens que você quer comprar. Ex: HIPOCLORITO 5% 5L, 2 BB")
-    ref_text = st.text_area("", height=110, placeholder="DETERGENTE GOLD 5L, 1 BB\nSACO DE LIXO 100L, 6 FD\n...", label_visibility="collapsed")
+    ref_text = st.text_area("", height=110, placeholder="DETERGENTE GOLD 5L, 1 BB\nSACO DE LIXO 100L, 6 PCT\n...", label_visibility="collapsed")
 
     st.markdown("<br>", unsafe_allow_html=True)
     col_btn, _ = st.columns([1, 3])
@@ -697,6 +713,9 @@ elif step == 3:
     st.markdown('<div class="section-eyebrow">Passo 3 de 4</div><div class="section-title">Revisão e ajustes</div>', unsafe_allow_html=True)
     st.info("Edite diretamente na tabela. Ajuste itens, quantidades e preços antes de gerar o Excel.")
 
+    # Mostrar info sobre unidades permitidas
+    st.caption(f"⚠️ Unidades permitidas: {', '.join(ALLOWED_UNITS)}")
+
     items = st.session_state.normalized_items
     if not items:
         st.warning("Nenhum item encontrado. Volte e processe os PDFs novamente.")
@@ -727,12 +746,26 @@ elif step == 3:
                 "Item":  st.column_config.TextColumn("Item", width="large"),
                 "Marca": st.column_config.TextColumn("Marca", width="medium"),
                 "Qtd":   st.column_config.NumberColumn("Qtd", min_value=0, step=0.5, width="small"),
-                "UND":   st.column_config.TextColumn("UND", width="small"),
+                "UND":   st.column_config.SelectboxColumn(
+                    "UND", 
+                    options=ALLOWED_UNITS,
+                    width="small",
+                    help="Unidades permitidas: UN, CX, PCT, BB, KG"
+                ),
                 **{f"R$ {s}": st.column_config.NumberColumn(f"{s}", min_value=0, format="R$ %.2f", width="medium") for s in active_suppliers},
                 "Observação": st.column_config.TextColumn("Obs", width="medium"),
             },
             hide_index=True,
         )
+
+        # Mostrar info sobre orçamento aprovado
+        if st.session_state.approved_supplier:
+            st.markdown(
+                f'<div style="font-size:0.85rem;color:#0071E3;padding:8px 0;">'
+                f'✓ Orçamento aprovado: <b>{st.session_state.approved_supplier}</b> — '
+                f'A coluna "Preço Autorizado" será preenchida automaticamente no Excel.</div>',
+                unsafe_allow_html=True
+            )
 
         st.markdown('<div class="apple-divider"></div>', unsafe_allow_html=True)
         with st.expander("Adicionar item manualmente (e-commerce / 4º fornecedor)", expanded=False):
@@ -740,7 +773,7 @@ elif step == 3:
             new_name  = c1.text_input("Nome do item")
             new_marca = c2.text_input("Marca")
             new_qtd   = c3.number_input("Qtd", min_value=0.0, step=1.0)
-            new_und   = c4.text_input("UND", value="UN")
+            new_und   = c4.selectbox("UND", options=ALLOWED_UNITS, index=0)
             price_cols = st.columns(len(active_suppliers))
             new_prices = {}
             for i, sname in enumerate(active_suppliers):
@@ -762,12 +795,18 @@ elif step == 3:
                 for sname in sup_names:
                     price = row.get(f"R$ {sname}")
                     forn_dict[sname] = {"preco_unit": float(price) if price and not pd.isna(price) else None, "obs": None}
+                
+                # Garantir unidade válida
+                und = str(row.get("UND") or "UN").upper()
+                if und not in ALLOWED_UNITS:
+                    und = "UN"
+                
                 result.append({
                     "id": int(row.get("ID") or len(result) + 1),
                     "item": str(row.get("Item", "")),
                     "marca": row.get("Marca") or None,
                     "quantidade": float(row.get("Qtd") or 1),
-                    "unidade": str(row.get("UND") or "UN"),
+                    "unidade": und,
                     "fornecedores": forn_dict,
                     "observacao": row.get("Observação") or None,
                 })
@@ -791,7 +830,7 @@ elif step == 3:
             else:
                 st.caption("Nenhuma diferença detectada em relação ao output da IA.")
 
-                st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
         col_back, col_fwd = st.columns([1, 4])
         with col_back:
             if st.button("← Voltar"):
@@ -828,6 +867,7 @@ elif step == 4:
 
     final_items      = st.session_state.get("final_items", [])
     active_suppliers = [s for s in supplier_names if s]
+    approved_supplier = st.session_state.get("approved_supplier")
 
     if not final_items:
         st.warning("Nenhum item para gerar. Volte ao passo 3.")
@@ -841,6 +881,7 @@ elif step == 4:
                     filial=filial,
                     responsavel=responsavel,
                     data_compra=data_compra,
+                    approved_supplier=approved_supplier,
                 )
                 filename = f"MapaCompras_{filial.replace(' ','_')}_{data_compra.strftime('%d%m%Y')}.xlsx"
 
@@ -859,9 +900,17 @@ elif step == 4:
                     if any(item.get("fornecedores", {}).get(s, {}).get("preco_unit") for s in active_suppliers)
                 )
 
+                # Total autorizado (se há fornecedor aprovado)
+                total_autorizado = None
+                if approved_supplier:
+                    total_autorizado = sum(
+                        (item.get("fornecedores", {}).get(approved_supplier, {}).get("preco_unit") or 0) * item["quantidade"]
+                        for item in final_items
+                    )
+
                 st.markdown(f"""
                 <div class="glass-card" style="margin-bottom:1.5rem;">
-                    <div style="display:flex;gap:40px;align-items:center;">
+                    <div style="display:flex;gap:40px;align-items:center;flex-wrap:wrap;">
                         <div>
                             <div class="supplier-label">Itens comparados</div>
                             <div style="font-size:2rem;font-weight:700;letter-spacing:-0.04em;color:#1C1C1E;">{len(final_items)}</div>
@@ -874,6 +923,10 @@ elif step == 4:
                             <div class="supplier-label">Total (menor preço)</div>
                             <div style="font-size:2rem;font-weight:700;letter-spacing:-0.04em;color:#1A7F37;">R$ {total_menor:,.2f}</div>
                         </div>
+                        {f'''<div>
+                            <div class="supplier-label">Total Autorizado ({approved_supplier})</div>
+                            <div style="font-size:2rem;font-weight:700;letter-spacing:-0.04em;color:#0071E3;">R$ {total_autorizado:,.2f}</div>
+                        </div>''' if total_autorizado is not None else ''}
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -919,6 +972,10 @@ elif step == 4:
                         if p: prices.append(p)
                     row["✦ Menor"] = f"R$ {min(prices):,.2f}" if prices else "—"
                     row["Total"]   = f"R$ {item['quantidade'] * min(prices):,.2f}" if prices else "—"
+                    # Mostrar preço autorizado no preview
+                    if approved_supplier:
+                        ap = item.get("fornecedores", {}).get(approved_supplier, {}).get("preco_unit")
+                        row["P. Autorizado"] = f"R$ {ap:,.2f}" if ap else "—"
                     preview_rows.append(row)
 
                 st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, hide_index=True)
