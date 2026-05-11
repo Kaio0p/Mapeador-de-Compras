@@ -1,0 +1,14 @@
+name: Keep Streamlit Awake
+
+on:
+  schedule:
+    # Roda a cada 15 minutos
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Streamlit App
+        run: curl -sL "https://mapeadordecompras.streamlit.app/" > /dev/null
