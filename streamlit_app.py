@@ -339,7 +339,7 @@ def _init_gemini():
 
 _init_gemini()
 
-# ── Auto-carrega preferências do Supabase na primeira execução ────────────────
+# ── Auto-carrega preferências e catálogo do Supabase na primeira execução ─────
 if not st.session_state.prefs_loaded:
     _sb_url, _sb_key = _get_sb_creds()
     if _sb_url and _sb_key:
@@ -349,6 +349,11 @@ if not st.session_state.prefs_loaded:
             st.session_state.preferences_context = build_prompt_context(loaded)
         except Exception:
             pass
+        try:
+            catalog = load_catalog_from_supabase(_sb_url, _sb_key)
+            st.session_state.catalog = catalog or []
+        except Exception:
+            st.session_state.catalog = []
     st.session_state.prefs_loaded = True
 
 
@@ -631,18 +636,19 @@ elif step == 3:
     st.markdown('<div class="section-eyebrow">Passo 3 de 4</div><div class="section-title">Revisão e ajustes</div>', unsafe_allow_html=True)
     st.info("Edite diretamente na tabela. Ajuste itens, quantidades e preços antes de gerar o Excel.")
 
+    items = st.session_state.normalized_items
+
     # ── Aviso de itens suspeitos (não encontrados no catálogo) ────────────────
-    suspects = [item for item in items if item.get("is_suspect")]
+    suspects = [it for it in items if it.get("is_suspect")]
     if suspects:
         suspect_names = ", ".join(f"**{s['item']}**" for s in suspects[:5])
         suffix = f" (e mais {len(suspects)-5})" if len(suspects) > 5 else ""
         st.warning(
-            f"⚠️ {len(suspects)} item(s) não encontrado(s) no catálogo oficial e precisam de revisão: "
+            f"⚠️ {len(suspects)} item(s) marcado(s) para revisão: "
             f"{suspect_names}{suffix}"
         )
     st.caption(f"⚠️ Unidades permitidas: {', '.join(ALLOWED_UNITS)}")
 
-    items = st.session_state.normalized_items
     if not items:
         st.warning("Nenhum item encontrado. Volte e processe os arquivos novamente.")
     else:
@@ -690,7 +696,6 @@ elif step == 3:
                 "⚠":    st.column_config.TextColumn("⚠", width="small", disabled=True),
                 **{f"R$ {s}": st.column_config.NumberColumn(f"{s}", min_value=0, format="R$ %.2f", width="medium") for s in active_suppliers},
                 "Observação": st.column_config.TextColumn("Obs", width="medium"),
-                "⚠️": st.column_config.TextColumn("Alerta Catálogo", width="medium"),
             },
             hide_index=True,
         )
