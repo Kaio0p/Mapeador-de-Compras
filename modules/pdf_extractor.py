@@ -117,3 +117,4 @@ def detect_image_mime(image_bytes: bytes) -> str:
         return "image/jpeg" if fmt == "JPEG" else "image/png"
     except Exception:
         return "image/png"
+
