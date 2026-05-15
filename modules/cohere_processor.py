@@ -46,7 +46,10 @@ logger = logging.getLogger(__name__)
 ALLOWED_UNITS = ["UN", "CX", "PCT", "BB", "KG"]
 
 # Modelo Cohere para normalização
-_COHERE_MODEL = "command-r-plus"
+# command-r-plus foi removido em setembro/2025.
+# command-a-reasoning-08-2025: modelo de raciocínio da Cohere, ideal para
+# lógica matemática (regra de 3, proporções) e estruturação JSON complexa.
+_COHERE_MODEL = "command-a-reasoning-08-2025"
 
 _PRICE_HIGH_THRESHOLD = 1_000.0
 
