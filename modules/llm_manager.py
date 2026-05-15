@@ -39,7 +39,8 @@ _cohere_client = None
 
 def get_cohere_client():
     """
-    Retorna o cliente Cohere, inicializando-o na primeira chamada.
+    Retorna o cliente Cohere V2, inicializando-o na primeira chamada.
+    Usa cohere.ClientV2 (SDK v5+) — API compatível com modelos command-a-*.
     Lança ValueError se COHERE_API_KEY não estiver nos secrets.
     """
     global _cohere_client
@@ -61,9 +62,9 @@ def get_cohere_client():
             "  COHERE_API_KEY = \"...\""
         )
 
-    import cohere
-    _cohere_client = cohere.Client(api_key=api_key)
-    logger.info("[LLM Manager] Cliente Cohere inicializado com sucesso.")
+    # ClientV2 é a API moderna (SDK >= 5.x) — suporta command-a-* e response_format
+    _cohere_client = cohere.ClientV2(api_key=api_key)
+    logger.info("[LLM Manager] Cliente Cohere V2 inicializado com sucesso.")
     return _cohere_client
 
 
@@ -156,4 +157,3 @@ def get_system_status() -> dict:
         "gemini_key_count":    len(gemini_keys),
         "cohere_key_preview":  "...{}".format(cohere_key[-6:]) if cohere_key else "—",
     }
-
