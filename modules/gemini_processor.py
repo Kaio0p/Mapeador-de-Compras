@@ -338,17 +338,41 @@ _AUDIT_USER_PROMPT = (
 
 # ── Funcoes Publicas ──────────────────────────────────────────────────────────
 
-def extract_items_from_images(images_b64: list, preferences_context: str = "") -> list:
+def extract_items_from_images(
+    images_b64: list,
+    preferences_context: str = "",
+    text_fallback: str = "",
+) -> list:
     """
-    Extrai itens de PDF escaneado ou imagens PNG via Gemini Vision.
-    A chave Gemini e rotacionada automaticamente a cada tentativa via pool.
+    Extrai itens de PDF escaneado, imagens PNG, ou PDF nativo via Gemini.
+
+    Parâmetros:
+      images_b64          — lista de strings base64 (PNG) das páginas do PDF.
+                            Pode ser lista vazia se text_fallback for fornecido.
+      preferences_context — contexto de correções aprendidas.
+      text_fallback       — texto extraído de um PDF nativo (quando não há imagens).
+                            Se fornecido, o Gemini lê o texto diretamente sem visão.
+
+    A chave Gemini é rotacionada automaticamente a cada tentativa via pool.
     """
     vision_prompt = _VISION_PROMPT.format(
-        preferences=preferences_context or "Nenhuma preferencia registrada ainda."
+        preferences=preferences_context or "Nenhuma preferência registrada ainda."
     )
-    parts = [vision_prompt] + [
-        {"mime_type": "image/png", "data": b64} for b64 in images_b64
-    ]
+
+    if text_fallback and not images_b64:
+        # PDF nativo — envia texto diretamente (sem imagem)
+        # O Gemini usa sua janela de contexto longa para ler o texto completo
+        text_prompt = (
+            vision_prompt
+            + "\n\nORÇAMENTO (texto extraído do PDF):\n"
+            + text_fallback[:60000]  # limite conservador para tokens
+        )
+        parts = [text_prompt]
+    else:
+        parts = [vision_prompt] + [
+            {"mime_type": "image/png", "data": b64} for b64 in images_b64
+        ]
+
     raw   = _call_vision_with_retry(parts)
     items = _parse_json_response(raw)
     items = _validate_extraction_items(items)
