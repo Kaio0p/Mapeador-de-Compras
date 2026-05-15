@@ -280,26 +280,41 @@ def _call_cohere_with_retry(
     max_tokens: int = 4096,
 ) -> str:
     """
-    Chama o Cohere command-r-plus com retry exponencial + jitter.
+    Chama o Cohere via ClientV2 com retry exponencial + jitter.
 
-    Usa response_format={"type": "json_object"} para forçar JSON puro.
+    API V2 (SDK >= 5.x):
+      - Usa client.chat(model, messages=[...], response_format=...)
+      - messages = [{"role": "system", "content": preamble}, {"role": "user", "content": message}]
+      - Resposta em response.message.content[0].text
+      - response_format={"type": "json_object"} força JSON puro
+
     Detecta HTTP 429 e extrai retry_after quando disponível.
     """
     client  = get_cohere_client()
     delay   = base_delay
     attempt = 0
 
+    # Monta a lista de mensagens no formato V2
+    messages = []
+    if preamble:
+        messages.append({"role": "system", "content": preamble})
+    messages.append({"role": "user", "content": message})
+
     while attempt < max_attempts:
         try:
             response = client.chat(
                 model=_COHERE_MODEL,
-                message=message,
-                preamble=preamble,
+                messages=messages,
                 response_format={"type": "json_object"},
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
-            return response.text or ""
+            # V2: response.message.content é uma lista de blocos de conteúdo
+            content = response.message.content
+            if isinstance(content, list) and content:
+                return content[0].text or ""
+            # Fallback para casos onde o SDK retorna string diretamente
+            return str(content) if content else ""
 
         except Exception as e:
             err_str = str(e).lower()
@@ -338,11 +353,15 @@ def _call_cohere_with_retry(
                 delay = min(delay * 2.0, 60.0)
                 continue
 
-            # Modelo não encontrado
-            if "model" in err_str and ("not found" in err_str or "invalid" in err_str):
+            # Modelo não encontrado / inválido
+            if "model" in err_str and (
+                "not found" in err_str or "invalid" in err_str or "removed" in err_str
+            ):
                 raise RuntimeError(
-                    "Modelo Cohere '{}' não encontrado. "
-                    "Verifique se o modelo está disponível na sua conta.".format(_COHERE_MODEL)
+                    "Modelo Cohere '{}' não encontrado ou removido. "
+                    "Verifique https://docs.cohere.com/docs/models para modelos disponíveis.".format(
+                        _COHERE_MODEL
+                    )
                 ) from e
 
             raise
