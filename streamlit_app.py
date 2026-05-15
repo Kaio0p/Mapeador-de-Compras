@@ -1,17 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-streamlit_app.py -- Gerador de Mapa de Compras (Arquitetura Multi-Agente)
+streamlit_app.py — Gerador de Mapa de Compras (Arquitetura Multi-Agente)
 =========================================================================
-Design: Apple HIG - Liquid Glass - SF Pro system stack
+Design: Apple HIG · Liquid Glass · SF Pro system stack
 
 Fluxo de agentes:
-  PDF nativo    -> Groq LPU  (extract_items_from_text   -- 128k context, ultra-rapido)
-  PDF escaneado -> Gemini    (extract_items_from_images -- OCR multi-chave)
-  Imagem direta -> Gemini    (extract_items_from_jpeg/png_images)
-  Normalizacao  -> Groq LPU  (normalize_and_match       -- fusao + Regra de Proporcao)
-  Auditoria     -> Gemini    (audit_purchase_map         -- cross-reference com originais)
-  Revisao       -> Humano    (st.data_editor             -- Human-in-the-Loop)
-  Download      -> Excel     (generate_excel)
+  PDF nativo    → Gemini (extract_items_from_text    — texto nativo)
+  PDF escaneado → Gemini (extract_items_from_images  — OCR multi-chave)
+  Imagem direta → Gemini (extract_items_from_jpeg/png_images)
+  Normalização  → Cohere (normalize_and_match        — command-r-plus)
+  Auditoria     → Gemini (audit_purchase_map          — cross-reference)
+  Revisão       → Humano (st.data_editor              — Human-in-the-Loop)
+  Download      → Excel  (generate_excel)
 """
 import sys
 import base64
@@ -24,7 +24,7 @@ if hasattr(sys.stdout, 'reconfigure'):
 if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
-# -- Importacoes dos modulos --------------------------------------------------
+# ── Importações dos módulos ───────────────────────────────────────────────────
 from modules.pdf_extractor import (
     extract_text_from_pdf, extract_images_from_pdf, get_pdf_page_count,
     detect_image_mime,
@@ -36,15 +36,14 @@ from modules.gemini_processor import (
     audit_purchase_map,
     ALLOWED_UNITS,
 )
-from modules.groq_processor import (
-    extract_items_from_text,
+from modules.cohere_processor import (
     normalize_and_match,
 )
 from modules.llm_manager import (
     get_system_status,
     configure_gemini_with_key,
     get_random_gemini_key,
-    get_groq_client,
+    get_cohere_client,
 )
 from modules.excel_generator import generate_excel
 from modules.preferences_manager import (
@@ -53,15 +52,15 @@ from modules.preferences_manager import (
     load_catalog_from_supabase,
 )
 
-# -- Page config --------------------------------------------------------------
+# ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Mapa de Compras - EBD",
+    page_title="Mapa de Compras · EBD",
     page_icon="🗂",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# -- CSS: Apple Liquid Glass --------------------------------------------------
+# ── CSS: Apple Liquid Glass ───────────────────────────────────────────────────
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,300&display=swap');
@@ -73,7 +72,7 @@ html, body, [class*="css"], .stApp {
     -webkit-font-smoothing: antialiased;
 }
 
-/* == BASE - MODO CLARO == */
+/* ══ BASE — MODO CLARO ══ */
 .stApp { background: #F2F2F7 !important; min-height: 100vh; }
 
 [data-testid="stSidebar"] {
@@ -125,37 +124,49 @@ p, label, .stMarkdown, .stCaption { color: #3A3A3C !important; font-size: 0.9rem
     background: linear-gradient(180deg, #1A8DFF 0%, #0071E3 100%) !important;
     color: #fff !important; border: none !important; box-shadow: 0 2px 12px rgba(0,113,227,0.38) !important;
 }
+.stButton > button[kind="primary"]:hover, button[data-testid="baseButton-primary"]:hover {
+    background: linear-gradient(180deg, #1E96FF 0%, #0077ED 100%) !important;
+    box-shadow: 0 4px 20px rgba(0,113,227,0.5) !important; transform: translateY(-1px) !important;
+}
 .stDownloadButton > button {
     background: linear-gradient(180deg, #34C759 0%, #28A745 100%) !important;
     color: #fff !important; border: none !important; border-radius: 980px !important;
     padding: 10px 26px !important; font-weight: 600 !important; font-size: 0.9rem !important;
-    box-shadow: 0 2px 14px rgba(40,167,69,0.38) !important;
+    box-shadow: 0 2px 14px rgba(40,167,69,0.38) !important; transition: all 0.18s ease !important;
 }
+.stDownloadButton > button:hover { transform: translateY(-1px) !important; box-shadow: 0 6px 22px rgba(40,167,69,0.45) !important; }
+
 [data-testid="stFileUploader"] {
     background: rgba(255,255,255,0.6) !important; backdrop-filter: blur(16px) !important;
     border: 1.5px dashed rgba(0,113,227,0.25) !important; border-radius: 14px !important;
-    padding: 1.2rem !important;
+    padding: 1.2rem !important; transition: border-color 0.2s, background 0.2s !important;
 }
+[data-testid="stFileUploader"]:hover { border-color: rgba(0,113,227,0.55) !important; background: rgba(0,113,227,0.03) !important; }
+
 .stAlert { border-radius: 12px !important; border: none !important; }
 div[data-testid="stAlert"] { background: rgba(0,113,227,0.07) !important; border-left: 3px solid #0071E3 !important; border-radius: 12px !important; }
+
 .streamlit-expanderHeader {
     background: rgba(255,255,255,0.75) !important; border-radius: 10px !important;
     border: 1px solid rgba(0,0,0,0.07) !important; font-weight: 500 !important;
-    font-size: 0.88rem !important; padding: 12px 16px !important;
+    font-size: 0.88rem !important; padding: 12px 16px !important; transition: background 0.2s !important;
 }
 .streamlit-expanderContent {
     background: rgba(255,255,255,0.5) !important; border: 1px solid rgba(0,0,0,0.06) !important;
     border-top: none !important; border-radius: 0 0 10px 10px !important; padding: 16px !important;
 }
+
 .stProgress > div > div { background: linear-gradient(90deg, #0071E3, #34C759) !important; border-radius: 999px !important; }
 .stProgress > div { background: rgba(0,0,0,0.06) !important; border-radius: 999px !important; height: 4px !important; }
+
 [data-testid="stDataFrame"], iframe {
     border-radius: 12px !important; overflow: hidden !important;
     box-shadow: 0 2px 16px rgba(0,0,0,0.06) !important; border: 1px solid rgba(0,0,0,0.06) !important;
 }
+.stSpinner > div { color: #0071E3 !important; }
 [data-baseweb="select"] > div { border-radius: 10px !important; border-color: rgba(0,0,0,0.1) !important; background: rgba(255,255,255,0.85) !important; }
 
-/* == COMPONENTES CUSTOMIZADOS == */
+/* ══ COMPONENTES CUSTOMIZADOS ══ */
 .glass-card {
     background: rgba(255,255,255,0.72);
     backdrop-filter: blur(20px) saturate(180%);
@@ -167,6 +178,7 @@ div[data-testid="stAlert"] { background: rgba(0,113,227,0.07) !important; border
 }
 .glass-card .supplier-label { font-size: 0.72rem; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: #8E8E93; margin-bottom: 4px; }
 .glass-card .supplier-name  { font-size: 1.05rem; font-weight: 600; color: #1C1C1E; letter-spacing: -0.02em; }
+
 .step-track {
     display: flex; align-items: center;
     background: rgba(255,255,255,0.6); backdrop-filter: blur(16px);
@@ -182,20 +194,24 @@ div[data-testid="stAlert"] { background: rgba(0,113,227,0.07) !important; border
 .step-dot {
     width: 26px; height: 26px; border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
-    font-size: 0.7rem; font-weight: 700; flex-shrink: 0;
+    font-size: 0.7rem; font-weight: 700; flex-shrink: 0; transition: all 0.3s ease;
 }
 .step-dot.done   { background: #34C759; color: #fff; }
 .step-dot.active { background: #0071E3; color: #fff; box-shadow: 0 0 0 4px rgba(0,113,227,0.2); }
 .step-dot.idle   { background: rgba(0,0,0,0.08); color: #8E8E93; }
-.step-text .num { font-weight: 600; color: #1C1C1E; font-size: 0.82rem; }
+.step-text { font-size: 0.82rem; line-height: 1.2; }
+.step-text .num { font-weight: 600; color: #1C1C1E; letter-spacing: -0.01em; }
 .step-text .sub { font-size: 0.72rem; color: #8E8E93; }
+
 .page-header { margin-bottom: 1.6rem; }
 .page-header h1 { margin-bottom: 4px !important; }
 .page-header .subtitle { font-size: 0.88rem; color: #636366; letter-spacing: -0.01em; }
+
 .section-eyebrow { font-size: 0.65rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #0071E3; margin-bottom: 6px; }
 .section-title   { font-size: 1.25rem; font-weight: 650; letter-spacing: -0.025em; color: #1C1C1E; margin-bottom: 1rem; }
 .apple-divider { height: 1px; background: linear-gradient(90deg, transparent, rgba(0,0,0,0.08), transparent); margin: 1.5rem 0; border: none; }
 .ref-label { font-size: 0.72rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #8E8E93; margin-bottom: 4px; }
+
 .success-pill {
     display: inline-flex; align-items: center; gap: 6px;
     background: rgba(52,199,89,0.12); border: 1px solid rgba(52,199,89,0.25);
@@ -215,23 +231,26 @@ div[data-testid="stAlert"] { background: rgba(0,113,227,0.07) !important; border
 }
 .suspect-card .suspect-title  { font-weight: 600; color: #B25000; font-size: 0.84rem; margin-bottom: 4px; }
 .suspect-card .suspect-reason { color: #7A4500; line-height: 1.5; }
+
 .agent-badge {
     display: inline-flex; align-items: center; gap: 4px;
     border-radius: 980px; padding: 3px 10px;
     font-size: 0.72rem; font-weight: 600; letter-spacing: 0.02em;
     margin-right: 6px; vertical-align: middle;
 }
-.agent-groq   { background: rgba(249,115,22,0.1); border: 1px solid rgba(249,115,22,0.25); color: #C2410C; }
 .agent-gemini { background: rgba(59,130,246,0.1); border: 1px solid rgba(59,130,246,0.25); color: #1D4ED8; }
+.agent-cohere { background: rgba(249,115,22,0.1); border: 1px solid rgba(249,115,22,0.25); color: #C2410C; }
 .agent-audit  { background: rgba(239,68,68,0.1);  border: 1px solid rgba(239,68,68,0.25);  color: #B91C1C; }
 
-/* == OVERRIDES MODO ESCURO == */
+/* ══ OVERRIDES MODO ESCURO ══ */
 .stApp[data-theme="dark"] { background: #1C1C1E !important; }
 [data-theme="dark"] [data-testid="stSidebar"] { background: rgba(28,28,30,0.92) !important; border-right: 1px solid rgba(255,255,255,0.07) !important; }
 [data-theme="dark"] h1, [data-theme="dark"] h2 { color: #F5F5F7 !important; }
 [data-theme="dark"] h3 { color: #E5E5EA !important; }
 [data-theme="dark"] p, [data-theme="dark"] label, [data-theme="dark"] .stMarkdown { color: #AEAEB2 !important; }
-[data-theme="dark"] .stTextInput input, [data-theme="dark"] .stTextArea textarea {
+[data-theme="dark"] .stCaption, [data-theme="dark"] small { color: #636366 !important; }
+[data-theme="dark"] .stTextInput input, [data-theme="dark"] .stDateInput input,
+[data-theme="dark"] .stNumberInput input, [data-theme="dark"] .stTextArea textarea {
     background: rgba(44,44,46,0.9) !important; border: 1px solid rgba(255,255,255,0.1) !important; color: #F5F5F7 !important;
 }
 [data-theme="dark"] .stButton > button { background: rgba(44,44,46,0.9) !important; color: #0A84FF !important; border: 1px solid rgba(10,132,255,0.3) !important; }
@@ -243,23 +262,30 @@ div[data-testid="stAlert"] { background: rgba(0,113,227,0.07) !important; border
 [data-theme="dark"] [data-testid="stFileUploader"] { background: rgba(44,44,46,0.6) !important; border: 1.5px dashed rgba(10,132,255,0.3) !important; }
 [data-theme="dark"] div[data-testid="stAlert"] { background: rgba(10,132,255,0.1) !important; border-left: 3px solid #0A84FF !important; }
 [data-theme="dark"] .streamlit-expanderHeader { background: rgba(44,44,46,0.75) !important; border: 1px solid rgba(255,255,255,0.07) !important; }
-[data-theme="dark"] .streamlit-expanderContent { background: rgba(44,44,46,0.5) !important; }
-[data-theme="dark"] .glass-card { background: rgba(44,44,46,0.75) !important; border: 1px solid rgba(255,255,255,0.08) !important; }
+[data-theme="dark"] .streamlit-expanderContent { background: rgba(44,44,46,0.5) !important; border: 1px solid rgba(255,255,255,0.06) !important; }
+[data-theme="dark"] [data-baseweb="select"] > div { background: rgba(44,44,46,0.85) !important; border-color: rgba(255,255,255,0.1) !important; }
+[data-theme="dark"] [data-testid="stDataFrame"], [data-theme="dark"] iframe { border: 1px solid rgba(255,255,255,0.07) !important; }
+[data-theme="dark"] .glass-card { background: rgba(44,44,46,0.75) !important; border: 1px solid rgba(255,255,255,0.08) !important; box-shadow: 0 4px 24px rgba(0,0,0,0.3) !important; }
 [data-theme="dark"] .glass-card .supplier-name  { color: #F5F5F7 !important; }
-[data-theme="dark"] .section-title { color: #F5F5F7 !important; }
+[data-theme="dark"] .glass-card .supplier-label { color: #636366 !important; }
+[data-theme="dark"] .step-track { background: rgba(44,44,46,0.75) !important; border: 1px solid rgba(255,255,255,0.07) !important; }
 [data-theme="dark"] .step-dot.idle { background: rgba(255,255,255,0.1) !important; }
 [data-theme="dark"] .step-text .num { color: #E5E5EA !important; }
-[data-theme="dark"] .suspect-card { background: rgba(255,149,0,0.05) !important; }
+[data-theme="dark"] .section-title { color: #F5F5F7 !important; }
+[data-theme="dark"] .page-header .subtitle { color: #8E8E93 !important; }
+[data-theme="dark"] .apple-divider { background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent) !important; }
+[data-theme="dark"] .ref-label { color: #636366 !important; }
+[data-theme="dark"] .suspect-card { background: rgba(255,149,0,0.05) !important; border-color: rgba(255,149,0,0.2) !important; }
 [data-theme="dark"] .suspect-card .suspect-title  { color: #FF9F0A !important; }
 [data-theme="dark"] .suspect-card .suspect-reason { color: #FFCC80 !important; }
-[data-theme="dark"] .agent-groq   { background: rgba(249,115,22,0.08) !important; color: #FB923C !important; }
 [data-theme="dark"] .agent-gemini { background: rgba(96,165,250,0.08) !important; color: #60A5FA !important; }
+[data-theme="dark"] .agent-cohere { background: rgba(249,115,22,0.08) !important; color: #FB923C !important; }
 [data-theme="dark"] .agent-audit  { background: rgba(248,113,113,0.08) !important; color: #F87171 !important; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# -- State init ----------------------------------------------------------------
+# ── State init ────────────────────────────────────────────────────────────────
 def init_state():
     defaults = {
         "step": 1,
@@ -267,14 +293,12 @@ def init_state():
         "normalized_items": [],
         "edited_items": [],
         "api_key_ok": False,
-        "groq_ok": False,
+        "cohere_ok": False,
         "preferences": {"corrections": [], "version": 1},
         "preferences_context": "",
         "prefs_loaded": False,
         "catalog": [],
-        "catalog_loaded": False,
         "approved_supplier": None,
-        # Guarda os textos originais dos PDFs nativos para a auditoria do Gemini
         "original_texts": {},
     }
     for k, v in defaults.items():
@@ -284,7 +308,7 @@ def init_state():
 init_state()
 
 
-# -- Inicializacao das APIs ---------------------------------------------------
+# ── Inicialização das APIs ─────────────────────────────────────────────────────
 def _get_sb_creds():
     try:
         return st.secrets.get("SUPABASE_URL", ""), st.secrets.get("SUPABASE_KEY", "")
@@ -295,7 +319,7 @@ def _get_sb_creds():
 def _init_apis():
     status = get_system_status()
 
-    # Gemini
+    # Gemini — pool de chaves
     if not st.session_state.api_key_ok and status["gemini_configured"]:
         key = get_random_gemini_key()
         if key:
@@ -305,11 +329,11 @@ def _init_apis():
             except Exception:
                 pass
 
-    # Groq
-    if not st.session_state.groq_ok and status["groq_configured"]:
+    # Cohere
+    if not st.session_state.cohere_ok and status["cohere_configured"]:
         try:
-            get_groq_client()
-            st.session_state.groq_ok = True
+            get_cohere_client()
+            st.session_state.cohere_ok = True
         except Exception:
             pass
 
@@ -318,11 +342,12 @@ def _init_apis():
 
 _system_status = _init_apis()
 
-# -- Auto-carrega preferencias e catalogo do Supabase -------------------------
+# ── Auto-carrega preferências e catálogo do Supabase ─────────────────────────
 if not st.session_state.prefs_loaded:
     _sb_url, _sb_key = _get_sb_creds()
     if _sb_url and _sb_key:
         try:
+            from modules.preferences_manager import load_from_supabase
             loaded = load_from_supabase(_sb_url, _sb_key)
             st.session_state.preferences = loaded
             st.session_state.preferences_context = build_prompt_context(loaded)
@@ -336,37 +361,37 @@ if not st.session_state.prefs_loaded:
     st.session_state.prefs_loaded = True
 
 
-# -- Sidebar ------------------------------------------------------------------
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+_FILIAIS = [
+    "Taquara",
+    "Duque de Caxias",
+    "São Gonçalo",
+    "Piraí",
+    "São Pedro",
+    "Petrópolis",
+]
+
 with st.sidebar:
     st.markdown("""
     <div style="padding:4px 0 16px; border-bottom:1px solid rgba(128,128,128,0.15); margin-bottom:4px;">
         <div style="font-size:1.15rem;font-weight:700;letter-spacing:-0.03em;">🗂 Mapa de Compras</div>
-        <div style="font-size:0.72rem;color:#8E8E93;margin-top:2px;">GRUPO EBD - DEPTO. COMPRAS</div>
+        <div style="font-size:0.72rem;color:#8E8E93;margin-top:2px;letter-spacing:0.02em;">GRUPO EBD · DEPTO. COMPRAS</div>
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Status dos agentes ─────────────────────────────────────────────────────
     st.markdown("### Agentes IA")
 
-    groq_color = "#1A7F37" if st.session_state.groq_ok else "#C0392B"
-    groq_label = "Groq conectado (texto+norm.)" if st.session_state.groq_ok else "Groq nao configurado"
-    st.markdown(
-        '<div style="font-size:0.8rem;color:{};font-weight:500;padding:4px 0 2px;">● {}</div>'.format(
-            groq_color, groq_label
-        ),
-        unsafe_allow_html=True,
-    )
-    if not st.session_state.groq_ok:
-        st.caption("Adicione GROQ_API_KEY em `.streamlit/secrets.toml`")
-
+    # Gemini (extração + auditoria)
     n_keys    = _system_status.get("gemini_key_count", 0)
     gem_color = "#1A7F37" if st.session_state.api_key_ok else "#C0392B"
     gem_label = (
-        "Gemini Vision+Auditoria ({} chave{})".format(n_keys, "s" if n_keys != 1 else "")
+        "Gemini conectado ({} chave{})".format(n_keys, "s" if n_keys != 1 else "")
         if st.session_state.api_key_ok
-        else "Gemini nao configurado"
+        else "Gemini não configurado"
     )
     st.markdown(
-        '<div style="font-size:0.8rem;color:{};font-weight:500;padding:2px 0 8px;">● {}</div>'.format(
+        '<div style="font-size:0.8rem;color:{};font-weight:500;padding:4px 0 2px;">● {}</div>'.format(
             gem_color, gem_label
         ),
         unsafe_allow_html=True,
@@ -374,17 +399,30 @@ with st.sidebar:
     if not st.session_state.api_key_ok:
         st.caption("Adicione GEMINI_API_KEYS em `.streamlit/secrets.toml`")
 
+    # Cohere (normalização)
+    coh_color = "#1A7F37" if st.session_state.cohere_ok else "#C0392B"
+    coh_label = "Cohere conectado (normalização)" if st.session_state.cohere_ok else "Cohere não configurado"
+    st.markdown(
+        '<div style="font-size:0.8rem;color:{};font-weight:500;padding:2px 0 8px;">● {}</div>'.format(
+            coh_color, coh_label
+        ),
+        unsafe_allow_html=True,
+    )
+    if not st.session_state.cohere_ok:
+        st.caption("Adicione COHERE_API_KEY em `.streamlit/secrets.toml`")
+
+    # Preferências ativas
     n_corr = len(st.session_state.get("preferences", {}).get("corrections", []))
     if n_corr > 0:
         st.markdown(
-            '<div style="font-size:0.78rem;color:#636366;padding:2px 0 8px;">🧠 {} correcao(oes) ativa(s)</div>'.format(n_corr),
+            '<div style="font-size:0.78rem;color:#636366;padding:2px 0 8px;">🧠 {} correção(ões) ativa(s)</div>'.format(n_corr),
             unsafe_allow_html=True,
         )
 
-    st.markdown("### Cabecalho")
-    numero_seq  = st.text_input("No. Sequencial", value="2026001001")
-    filial      = st.text_input("Filial", value="Sao Goncalo")
-    responsavel = st.text_input("Responsavel", value="")
+    st.markdown("### Cabeçalho")
+    numero_seq  = st.text_input("Nº Sequencial", value="2026001001")
+    filial      = st.selectbox("Filial", options=_FILIAIS, index=2)
+    responsavel = st.text_input("Responsável", value="")
     data_compra = st.date_input("Data", value=date.today())
 
     st.markdown("### Fornecedores")
@@ -392,34 +430,36 @@ with st.sidebar:
 
     supplier_names = []
     for i in range(n_suppliers):
-        name = st.text_input("Fornecedor {}".format(i + 1), key="sup_name_{}".format(i),
-                             placeholder="Nome do fornecedor {}".format(i + 1))
+        name = st.text_input(
+            "Fornecedor {}".format(i + 1),
+            key="sup_name_{}".format(i),
+            placeholder="Nome do fornecedor {}".format(i + 1),
+        )
         supplier_names.append(name)
 
-    st.markdown("### Orcamento Aprovado")
+    st.markdown("### Orçamento Aprovado")
     active_suppliers_sidebar = [s for s in supplier_names if s]
-    approved_options  = ["Nenhum (nao preencher)"] + active_suppliers_sidebar
+    approved_options  = ["Nenhum (não preencher)"] + active_suppliers_sidebar
     approved_selection = st.selectbox(
         "Fornecedor aprovado", options=approved_options, index=0,
-        help="Se selecionado, preenche 'Preco Autorizado' no Excel automaticamente."
+        help="Se selecionado, preenche 'Preço Autorizado' no Excel automaticamente.",
     )
-    if approved_selection == "Nenhum (nao preencher)":
-        st.session_state.approved_supplier = None
-    else:
-        st.session_state.approved_supplier = approved_selection
+    st.session_state.approved_supplier = (
+        None if approved_selection == "Nenhum (não preencher)" else approved_selection
+    )
 
     st.markdown(
-        '<div style="margin-top:2rem;font-size:0.72rem;color:#8E8E93;text-align:center;">v3.0 - Multi-Agente - 2026</div>',
+        '<div style="margin-top:2rem;font-size:0.72rem;color:#8E8E93;text-align:center;">v3.0 · Multi-Agente · 2026</div>',
         unsafe_allow_html=True,
     )
 
 
-# -- Helpers UI ---------------------------------------------------------------
+# ── Helpers UI ────────────────────────────────────────────────────────────────
 step = st.session_state.step
 
 
 def step_tracker():
-    steps = [("Upload", "PDFs/Imgs"), ("Extracao", "IA"), ("Revisao", "Itens"), ("Download", "Excel")]
+    steps = [("Upload", "PDFs/Imgs"), ("Extração", "IA"), ("Revisão", "Itens"), ("Download", "Excel")]
     parts = []
     for i, (label, sub) in enumerate(steps, 1):
         if i < step:    cls = "done";   icon = "✓"
@@ -427,9 +467,9 @@ def step_tracker():
         else:           cls = "idle";   icon = str(i)
         parts.append(
             '<div class="step-item">'
-            '<div class="step-dot {}">{}</div>'
-            '<div class="step-text"><div class="num">{}</div><div class="sub">{}</div></div>'
-            '</div>'.format(cls, icon, label, sub)
+            '<div class="step-dot {cls}">{icon}</div>'
+            '<div class="step-text"><div class="num">{label}</div><div class="sub">{sub}</div></div>'
+            '</div>'.format(cls=cls, icon=icon, label=label, sub=sub)
         )
     st.markdown('<div class="step-track">{}</div>'.format("".join(parts)), unsafe_allow_html=True)
 
@@ -440,20 +480,19 @@ def _is_image_file(filename: str) -> bool:
 
 def _agent_badge(agent: str) -> str:
     badges = {
-        "groq":   '<span class="agent-badge agent-groq">⚡ Groq</span>',
-        "gemini": '<span class="agent-badge agent-gemini">👁 Gemini Vision</span>',
-        "audit":  '<span class="agent-badge agent-audit">🔍 Auditor Gemini</span>',
+        "gemini": '<span class="agent-badge agent-gemini">👁 Gemini</span>',
+        "cohere": '<span class="agent-badge agent-cohere">⚙ Cohere</span>',
+        "audit":  '<span class="agent-badge agent-audit">🔍 Auditor</span>',
     }
     return badges.get(agent, "")
 
 
-# -- Page header --------------------------------------------------------------
+# ── Page header ───────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="page-header">
     <h1>Gerador de Mapa de Compras</h1>
     <div class="subtitle">
-        PDFs nativos via Groq (128k) · PDFs escaneados e imagens via Gemini Vision ·
-        Auditoria cross-reference via Gemini · Revise e aprove · Baixe o Excel
+        Faça upload dos orçamentos · Gemini extrai · Cohere normaliza · Gemini audita · Você revisa · Baixe o Excel
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -461,19 +500,19 @@ st.markdown("""
 step_tracker()
 
 
-# ============================================================================
-# PASSO 1 - Upload
-# ============================================================================
+# ═════════════════════════════════════════════════════════════════════════════
+# PASSO 1 · Upload
+# ═════════════════════════════════════════════════════════════════════════════
 if step == 1:
     st.markdown(
         '<div class="section-eyebrow">Passo 1 de 4</div>'
-        '<div class="section-title">Upload dos orcamentos</div>',
+        '<div class="section-title">Upload dos orçamentos</div>',
         unsafe_allow_html=True,
     )
     st.info(
         "Carregue um PDF ou imagem (PNG/JPEG) por fornecedor.  \n"
-        "**PDFs nativos** sao processados pelo **Groq** (ultra-rapido, 128k tokens).  \n"
-        "**PDFs escaneados e imagens** sao processados pelo **Gemini Vision** (OCR)."
+        "**PDFs nativos e escaneados** são processados pelo **Gemini** (OCR e extração).  \n"
+        "**Normalização e cruzamento** são feitos pelo **Cohere command-r-plus**."
     )
 
     uploaded_files = {}
@@ -483,7 +522,7 @@ if step == 1:
         sname = supplier_names[i] or "Fornecedor {}".format(i + 1)
         st.markdown(
             '<div class="glass-card">'
-            '<div class="supplier-label">Orcamento {}</div>'
+            '<div class="supplier-label">Orçamento {}</div>'
             '<div class="supplier-name">{}</div>'
             '</div>'.format(i + 1, sname),
             unsafe_allow_html=True,
@@ -510,7 +549,7 @@ if step == 1:
             else:
                 pages = get_pdf_page_count(raw)
                 st.markdown(
-                    '<div class="success-pill">✓ {} &nbsp;·&nbsp; {} pag.</div>'.format(
+                    '<div class="success-pill">✓ {} &nbsp;·&nbsp; {} pág.</div>'.format(
                         f.name, pages
                     ),
                     unsafe_allow_html=True,
@@ -519,8 +558,8 @@ if step == 1:
 
         st.markdown('<div class="apple-divider"></div>', unsafe_allow_html=True)
 
-    st.markdown('<div class="ref-label">Lista de referencia (opcional)</div>', unsafe_allow_html=True)
-    st.caption("Cole os itens que voce quer comprar. Ex: HIPOCLORITO 5% 5L, 2 BB")
+    st.markdown('<div class="ref-label">Lista de referência (opcional)</div>', unsafe_allow_html=True)
+    st.caption("Cole os itens que você quer comprar. Ex: HIPOCLORITO 5% 5L, 2 BB")
     ref_text = st.text_area(
         "", height=110,
         placeholder="DETERGENTE GOLD 5L, 1 BB\nSACO DE LIXO 100L, 6 PCT\n...",
@@ -531,7 +570,7 @@ if step == 1:
     col_btn, _ = st.columns([1, 3])
     with col_btn:
         if st.button(
-            "Avancar para extracao →",
+            "Avançar para extração →",
             type="primary", disabled=not any_uploaded, use_container_width=True,
         ):
             st.session_state.uploaded_files = uploaded_files
@@ -540,33 +579,35 @@ if step == 1:
             st.rerun()
 
 
-# ============================================================================
-# PASSO 2 - Extracao IA (Fluxo Maestro Multi-Agente)
-# ============================================================================
+# ═════════════════════════════════════════════════════════════════════════════
+# PASSO 2 · Extração IA (Fluxo Maestro Multi-Agente)
+# ═════════════════════════════════════════════════════════════════════════════
 elif step == 2:
     st.markdown(
         '<div class="section-eyebrow">Passo 2 de 4</div>'
-        '<div class="section-title">Extracao, Normalizacao e Auditoria via IA</div>',
+        '<div class="section-title">Extração, Normalização e Auditoria via IA</div>',
         unsafe_allow_html=True,
     )
 
-    if not st.session_state.groq_ok and not st.session_state.api_key_ok:
+    # Verifica disponibilidade dos agentes
+    if not st.session_state.api_key_ok:
         st.error(
-            "Nenhum agente de IA configurado. "
-            "Adicione GROQ_API_KEY e/ou GEMINI_API_KEYS ao arquivo `.streamlit/secrets.toml`."
+            "Gemini não configurado. "
+            "Adicione GEMINI_API_KEYS ao arquivo `.streamlit/secrets.toml`."
         )
         st.stop()
 
-    if not st.session_state.groq_ok:
-        st.warning(
-            "GROQ_API_KEY nao configurada. PDFs nativos nao poderao ser processados. "
-            "Apenas OCR via Gemini Vision estara disponivel."
+    if not st.session_state.cohere_ok:
+        st.error(
+            "Cohere não configurado. "
+            "Adicione COHERE_API_KEY ao arquivo `.streamlit/secrets.toml`."
         )
+        st.stop()
 
     uploaded_files = st.session_state.get("uploaded_files", {})
     ref_text       = st.session_state.get("ref_text", "")
 
-    # Parse da lista de referencia
+    # Parse da lista de referência
     reference_list = []
     if ref_text.strip():
         for line in ref_text.strip().split("\n"):
@@ -584,20 +625,19 @@ elif step == 2:
     col_btn, _ = st.columns([1, 3])
     with col_btn:
         run_extraction = st.button(
-            "Iniciar extracao com IA →", type="primary", use_container_width=True
+            "Iniciar extração com IA →", type="primary", use_container_width=True
         )
 
     if run_extraction:
         supplier_items = {}
-        # original_texts guarda o texto de PDFs nativos para a auditoria do Gemini
-        original_texts = {}
+        original_texts = {}   # textos originais para a auditoria do Gemini
         prefs_ctx      = st.session_state.get("preferences_context", "")
 
-        with st.status("Analisando orcamentos...", expanded=True) as status_box:
+        with st.status("Analisando orçamentos…", expanded=True) as status_box:
 
-            # ----------------------------------------------------------------
-            # ETAPA 1 - Extracao por fornecedor (roteamento inteligente)
-            # ----------------------------------------------------------------
+            # ─────────────────────────────────────────────────────────────────
+            # ETAPA 1 — Extração por fornecedor via Gemini
+            # ─────────────────────────────────────────────────────────────────
             for supplier_name, finfo in uploaded_files.items():
                 pdf_bytes = finfo["bytes"]
                 fname     = finfo["name"]
@@ -605,10 +645,10 @@ elif step == 2:
 
                 try:
                     if is_image:
-                        # Imagem direta -> Gemini Vision (OCR)
+                        # Imagem direta → Gemini Vision
                         mime = detect_image_mime(pdf_bytes)
                         st.write(
-                            "🖼 {} Processando imagem **{}** de **{}**...".format(
+                            "🖼 {} Processando imagem **{}** de **{}**…".format(
                                 _agent_badge("gemini"), fname, supplier_name
                             )
                         )
@@ -621,16 +661,17 @@ elif step == 2:
                             items = extract_items_from_images(
                                 [b64], preferences_context=prefs_ctx
                             )
+                        original_texts[supplier_name] = "[Imagem — OCR via Gemini Vision]"
 
                     else:
-                        # PDF - detecta se e nativo ou escaneado
-                        st.write("📄 Lendo PDF de **{}**...".format(supplier_name))
+                        # PDF — detecta se é nativo ou escaneado
+                        st.write("📄 Lendo PDF de **{}**…".format(supplier_name))
                         text, is_img_pdf = extract_text_from_pdf(pdf_bytes)
 
                         if is_img_pdf:
-                            # PDF escaneado -> Gemini Vision (OCR)
+                            # PDF escaneado → Gemini Vision (OCR)
                             st.write(
-                                "🔍 {} PDF escaneado detectado - enviando para OCR...".format(
+                                "🔍 {} PDF escaneado detectado — enviando para OCR…".format(
                                     _agent_badge("gemini")
                                 )
                             )
@@ -638,33 +679,26 @@ elif step == 2:
                             items  = extract_items_from_images(
                                 images, preferences_context=prefs_ctx
                             )
-                            # Para PDFs escaneados guardamos descricao breve (sem texto real)
-                            original_texts[supplier_name] = (
-                                "[PDF escaneado - texto extraido via OCR Gemini Vision]"
-                            )
+                            original_texts[supplier_name] = "[PDF escaneado — OCR via Gemini Vision]"
                         else:
-                            # PDF nativo -> Groq LPU (128k context, ultra-rapido)
-                            if not st.session_state.groq_ok:
-                                st.error(
-                                    "PDF nativo de **{}** requer Groq (nao configurado). "
-                                    "Configure GROQ_API_KEY.".format(supplier_name)
-                                )
-                                continue
+                            # PDF nativo com texto → Gemini extrai direto do texto
                             st.write(
-                                "⚡ {} Extraindo itens de **{}** via Groq (128k)...".format(
-                                    _agent_badge("groq"), supplier_name
+                                "👁 {} Extraindo itens de **{}** via Gemini…".format(
+                                    _agent_badge("gemini"), supplier_name
                                 )
                             )
-                            items = extract_items_from_text(
-                                text, preferences_context=prefs_ctx
+                            # Usa o prompt de visão com texto inline (sem imagem)
+                            items = extract_items_from_images(
+                                [],
+                                preferences_context=prefs_ctx,
+                                text_fallback=text,
                             )
-                            # Guarda texto original para a auditoria do Gemini
                             original_texts[supplier_name] = text
 
                     supplier_items[supplier_name] = items
 
                     n_suspect = sum(1 for it in items if it.get("is_suspect"))
-                    msg = "✅ **{}** -- {} item(s) extraido(s)".format(supplier_name, len(items))
+                    msg = "✅ **{}** — {} item(s) extraído(s)".format(supplier_name, len(items))
                     if n_suspect:
                         msg += " · ⚠️ {} suspeito(s)".format(n_suspect)
                     st.write(msg)
@@ -673,24 +707,24 @@ elif step == 2:
                         st.json(items)
 
                 except RuntimeError as e:
-                    status_box.update(label="Limite de requisicoes atingido", state="error")
+                    status_box.update(label="Limite de requisições atingido", state="error")
                     st.error(str(e))
                     st.stop()
                 except Exception as e:
                     st.error("Erro ao processar {}: {}".format(supplier_name, e))
 
             if not supplier_items:
-                status_box.update(label="Nenhum item extraido", state="error")
-                st.warning("Nenhum item foi extraido. Verifique os arquivos e tente novamente.")
+                status_box.update(label="Nenhum item extraído", state="error")
+                st.warning("Nenhum item foi extraído. Verifique os arquivos e tente novamente.")
                 st.stop()
 
-            # ----------------------------------------------------------------
-            # ETAPA 2 - Normalizacao e Fuzzy Match via Groq LPU
-            # ----------------------------------------------------------------
+            # ─────────────────────────────────────────────────────────────────
+            # ETAPA 2 — Normalização e Fuzzy Match via Cohere
+            # ─────────────────────────────────────────────────────────────────
             st.write(
-                "⚖️ {} Cruzando e normalizando itens entre {} fornecedor(es)... "
-                "_(pode levar ate 30s)_".format(
-                    _agent_badge("groq"), len(supplier_items)
+                "⚙ {} Cruzando e normalizando itens entre {} fornecedor(es)… "
+                "_(pode levar até 30s)_".format(
+                    _agent_badge("cohere"), len(supplier_items)
                 )
             )
             try:
@@ -701,30 +735,30 @@ elif step == 2:
                     catalog=st.session_state.get("catalog") or None,
                 )
             except Exception as e:
-                status_box.update(label="Erro na normalizacao", state="error")
-                st.error("Erro na normalizacao: {}".format(e))
+                status_box.update(label="Erro na normalização", state="error")
+                st.error("Erro na normalização: {}".format(e))
                 st.stop()
 
-            # ----------------------------------------------------------------
-            # ETAPA 3 - Auditoria Final via Gemini (cross-reference com originais)
-            # ----------------------------------------------------------------
+            # ─────────────────────────────────────────────────────────────────
+            # ETAPA 3 — Auditoria Final via Gemini (cross-reference)
+            # ─────────────────────────────────────────────────────────────────
             st.write(
-                "🔍 {} Auditando mapa -- cruzando com textos originais dos orcamentos...".format(
+                "🔍 {} Auditando mapa — cruzando com textos originais dos orçamentos…".format(
                     _agent_badge("audit")
                 )
             )
             normalized = audit_purchase_map(normalized, original_texts=original_texts)
 
-            # ----------------------------------------------------------------
+            # ─────────────────────────────────────────────────────────────────
             # Finaliza
-            # ----------------------------------------------------------------
+            # ─────────────────────────────────────────────────────────────────
             st.session_state.supplier_data    = supplier_items
             st.session_state.normalized_items = normalized
             st.session_state.edited_items     = [dict(x) for x in normalized]
             st.session_state.original_texts   = original_texts
 
             n_suspect_total = sum(1 for it in normalized if it.get("is_suspect"))
-            label_done = "✅ {} itens prontos para revisao".format(len(normalized))
+            label_done = "✅ {} itens prontos para revisão".format(len(normalized))
             if n_suspect_total:
                 label_done += " · 🚨 {} item(s) para revisar".format(n_suspect_total)
             status_box.update(label=label_done, state="complete", expanded=False)
@@ -737,13 +771,13 @@ elif step == 2:
         st.rerun()
 
 
-# ============================================================================
-# PASSO 3 - Revisao Human-in-the-Loop
-# ============================================================================
+# ═════════════════════════════════════════════════════════════════════════════
+# PASSO 3 · Revisão — Human-in-the-Loop
+# ═════════════════════════════════════════════════════════════════════════════
 elif step == 3:
     st.markdown(
         '<div class="section-eyebrow">Passo 3 de 4</div>'
-        '<div class="section-title">Revisao e Aprovacao -- Human-in-the-Loop</div>',
+        '<div class="section-title">Revisão e Aprovação — Human-in-the-Loop</div>',
         unsafe_allow_html=True,
     )
     st.info(
@@ -761,7 +795,7 @@ elif step == 3:
         suspect_items = [it for it in items if it.get("is_suspect")]
         if suspect_items:
             with st.expander(
-                "🚨 {} alerta(s) do Auditor Gemini -- clique para revisar".format(len(suspect_items)),
+                "🚨 {} alerta(s) do Auditor — clique para revisar".format(len(suspect_items)),
                 expanded=True,
             ):
                 for it in suspect_items:
@@ -790,24 +824,24 @@ elif step == 3:
                 reasons = [reasons]
             if is_suspect and reasons:
                 r0        = reasons[0]
-                alert_col = "🚨 " + (r0[:60] + "..." if len(r0) > 60 else r0)
+                alert_col = "🚨 " + (r0[:60] + "…" if len(r0) > 60 else r0)
             elif is_suspect:
                 alert_col = "🚨 Verificar"
             else:
                 alert_col = ""
 
             row = {
-                "ID":          item.get("id", ""),
-                "Item":        item.get("item", ""),
-                "Marca":       item.get("marca") or "",
-                "Qtd":         item.get("quantidade", 1),
-                "UND":         item.get("unidade", "UN"),
-                "🚨 Alerta":   alert_col,
+                "ID":         item.get("id", ""),
+                "Item":       item.get("item", ""),
+                "Marca":      item.get("marca") or "",
+                "Qtd":        item.get("quantidade", 1),
+                "UND":        item.get("unidade", "UN"),
+                "🚨 Alerta":  alert_col,
             }
             for sname in active_suppliers:
                 fdata = item.get("fornecedores", {}).get(sname, {})
                 row["R$ {}".format(sname)] = fdata.get("preco_unit") if fdata else None
-            row["Observacao"] = item.get("observacao") or ""
+            row["Observação"] = item.get("observacao") or ""
             rows.append(row)
 
         col_cfg = {
@@ -817,7 +851,7 @@ elif step == 3:
             "Qtd":  st.column_config.NumberColumn("Qtd", min_value=0, step=0.5, width="small"),
             "UND":  st.column_config.SelectboxColumn("UND", options=ALLOWED_UNITS, width="small"),
             "🚨 Alerta": st.column_config.TextColumn("🚨 Alerta do Auditor", width="large", disabled=True),
-            "Observacao": st.column_config.TextColumn("Obs", width="medium"),
+            "Observação": st.column_config.TextColumn("Obs", width="medium"),
         }
         for sname in active_suppliers:
             col_cfg["R$ {}".format(sname)] = st.column_config.NumberColumn(
@@ -835,8 +869,8 @@ elif step == 3:
         if st.session_state.approved_supplier:
             st.markdown(
                 '<div style="font-size:0.85rem;color:#0071E3;padding:8px 0;">'
-                '✓ Orcamento aprovado: <b>{}</b> -- '
-                'A coluna "Preco Autorizado" sera preenchida automaticamente no Excel.</div>'.format(
+                '✓ Orçamento aprovado: <b>{}</b> — '
+                'A coluna "Preço Autorizado" será preenchida automaticamente no Excel.</div>'.format(
                     st.session_state.approved_supplier
                 ),
                 unsafe_allow_html=True,
@@ -845,7 +879,7 @@ elif step == 3:
         st.markdown('<div class="apple-divider"></div>', unsafe_allow_html=True)
 
         # Adicionar item manualmente
-        with st.expander("Adicionar item manualmente (e-commerce / 4o fornecedor)", expanded=False):
+        with st.expander("Adicionar item manualmente (e-commerce / 4º fornecedor)", expanded=False):
             c1, c2, c3, c4 = st.columns(4)
             new_name  = c1.text_input("Nome do item")
             new_marca = c2.text_input("Marca")
@@ -855,14 +889,14 @@ elif step == 3:
             new_prices = {}
             for i, sname in enumerate(active_suppliers):
                 new_prices[sname] = price_cols[i].number_input(
-                    "Preco {}".format(sname), min_value=0.0, format="%.2f", key="np_{}".format(i)
+                    "Preço {}".format(sname), min_value=0.0, format="%.2f", key="np_{}".format(i)
                 )
-            new_obs = st.text_input("Observacao", key="new_obs")
+            new_obs = st.text_input("Observação", key="new_obs")
             if st.button("Adicionar item") and new_name:
                 new_row = {
                     "ID": len(edited_df) + 1, "Item": new_name.upper(),
                     "Marca": new_marca, "Qtd": new_qtd, "UND": new_und,
-                    "🚨 Alerta": "", "Observacao": new_obs,
+                    "🚨 Alerta": "", "Observação": new_obs,
                 }
                 for sname in active_suppliers:
                     new_row["R$ {}".format(sname)] = (
@@ -871,7 +905,7 @@ elif step == 3:
                 edited_df = pd.concat([edited_df, pd.DataFrame([new_row])], ignore_index=True)
                 st.success("'{}' adicionado.".format(new_name))
 
-        # Converter DataFrame para lista de itens
+        # Converter DataFrame → lista de itens
         def df_to_items(df, sup_names):
             result = []
             for _, row in df.iterrows():
@@ -894,12 +928,12 @@ elif step == 3:
                     "quantidade":   float(row.get("Qtd") or 1),
                     "unidade":      und,
                     "fornecedores": forn_dict,
-                    "observacao":   row.get("Observacao") or None,
+                    "observacao":   row.get("Observação") or None,
                 })
             return result
 
-        # Painel de correcoes capturadas
-        with st.expander("🧠 Correcoes capturadas nesta sessao", expanded=False):
+        # Painel de correções capturadas
+        with st.expander("🧠 Correções capturadas nesta sessão", expanded=False):
             ai_items = st.session_state.normalized_items
             corrections_so_far = detect_corrections(
                 ai_items, df_to_items(edited_df, active_suppliers), active_suppliers
@@ -912,7 +946,7 @@ elif step == 3:
                         unsafe_allow_html=True,
                     )
             else:
-                st.caption("Nenhuma diferenca detectada em relacao ao output da IA.")
+                st.caption("Nenhuma diferença detectada em relação ao output da IA.")
 
         st.markdown("<br>", unsafe_allow_html=True)
         col_back, col_fwd = st.columns([1, 4])
@@ -924,7 +958,7 @@ elif step == 3:
             if st.button("✅ Aprovar e Gerar Excel →", type="primary"):
                 final = df_to_items(edited_df, active_suppliers)
 
-                # Salva correcoes do usuario para aprendizado futuro
+                # Salva correções para aprendizado futuro
                 new_corr = detect_corrections(
                     st.session_state.normalized_items, final, active_suppliers
                 )
@@ -943,9 +977,9 @@ elif step == 3:
                 st.rerun()
 
 
-# ============================================================================
-# PASSO 4 - Download
-# ============================================================================
+# ═════════════════════════════════════════════════════════════════════════════
+# PASSO 4 · Download
+# ═════════════════════════════════════════════════════════════════════════════
 elif step == 4:
     st.markdown(
         '<div class="section-eyebrow">Passo 4 de 4</div>'
@@ -960,7 +994,7 @@ elif step == 4:
     if not final_items:
         st.warning("Nenhum item para gerar. Volte ao passo 3.")
     else:
-        with st.spinner("Gerando planilha..."):
+        with st.spinner("Gerando planilha…"):
             try:
                 result = generate_excel(
                     items=final_items,
@@ -1019,7 +1053,7 @@ elif step == 4:
                     '<div style="font-size:2rem;font-weight:700;letter-spacing:-0.04em;">{}</div></div>'
                     '<div><div class="supplier-label">Fornecedores</div>'
                     '<div style="font-size:2rem;font-weight:700;letter-spacing:-0.04em;">{}</div></div>'
-                    '<div><div class="supplier-label">Total (menor preco)</div>'
+                    '<div><div class="supplier-label">Total (menor preço)</div>'
                     '<div style="font-size:2rem;font-weight:700;letter-spacing:-0.04em;color:#1A7F37;">R$ {:,.2f}</div></div>'
                     '{}'
                     '</div></div>'.format(
@@ -1041,8 +1075,7 @@ elif step == 4:
                 with col_new:
                     if st.button("Novo mapa", use_container_width=True):
                         for k in ["step", "supplier_data", "normalized_items",
-                                  "edited_items", "final_items", "uploaded_files",
-                                  "original_texts"]:
+                                  "edited_items", "final_items", "uploaded_files", "original_texts"]:
                             st.session_state[k] = (
                                 1 if k == "step"
                                 else ({} if k in ["supplier_data", "uploaded_files", "original_texts"] else [])
@@ -1054,8 +1087,8 @@ elif step == 4:
                 if n_corr_total > 0:
                     st.markdown(
                         '<div style="font-size:0.85rem;color:#1A7F37;padding:8px 0;">'
-                        '🧠 {} preferencia(s) salva(s) automaticamente -- '
-                        'serao aplicadas na proxima extracao.</div>'.format(n_corr_total),
+                        '🧠 {} preferência(s) salva(s) automaticamente — '
+                        'serão aplicadas na próxima extração.</div>'.format(n_corr_total),
                         unsafe_allow_html=True,
                     )
 
@@ -1092,6 +1125,6 @@ elif step == 4:
                 st.error("Erro ao gerar Excel: {}".format(e))
                 st.exception(e)
 
-    if st.button("← Voltar para revisao"):
+    if st.button("← Voltar para revisão"):
         st.session_state.step = 3
         st.rerun()
