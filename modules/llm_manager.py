@@ -156,3 +156,4 @@ def get_system_status() -> dict:
         "gemini_key_count":    len(gemini_keys),
         "cohere_key_preview":  "...{}".format(cohere_key[-6:]) if cohere_key else "—",
     }
+
