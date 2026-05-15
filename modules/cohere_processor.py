@@ -309,12 +309,20 @@ def _call_cohere_with_retry(
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
-            # V2: response.message.content é uma lista de blocos de conteúdo
+            # V2: response.message.content é uma lista de blocos de conteúdo.
+            # Modelos de raciocínio (command-a-reasoning-*) retornam dois tipos:
+            #   - ThinkingAssistantMessageResponseContentItem  → raciocínio interno (sem .text)
+            #   - TextAssistantMessageResponseContentItem      → resposta final    (tem .text)
+            # Filtramos pelo bloco que tem o atributo "text".
             content = response.message.content
-            if isinstance(content, list) and content:
-                return content[0].text or ""
-            # Fallback para casos onde o SDK retorna string diretamente
-            return str(content) if content else ""
+            if isinstance(content, list):
+                for block in content:
+                    if hasattr(block, "text") and block.text:
+                        return block.text
+            # Fallback para string direta (modelos não-reasoning)
+            if isinstance(content, str) and content:
+                return content
+            return ""
 
         except Exception as e:
             err_str = str(e).lower()
