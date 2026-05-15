@@ -511,4 +511,3 @@ def audit_purchase_map(normalized_items: list, original_texts: dict = None) -> l
     except Exception as e:
         logger.error("[Gemini/Auditoria] Erro (nao bloqueante): %s", e)
         return normalized_items
-
