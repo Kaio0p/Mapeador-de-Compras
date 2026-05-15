@@ -6,25 +6,22 @@ Centraliza o gerenciamento de todos os clientes de LLM do sistema.
 
 Arquitetura:
   • Pool de Chaves Gemini  — escolhe chave aleatória da lista GEMINI_API_KEYS
-                             (st.secrets) a cada chamada, distribuindo carga e
-                             evitando bloqueios 429 por rate-limit.
-  • Cliente Groq Singleton — inicializado uma única vez com GROQ_API_KEY;
-                             ultra-rápido para texto (LPU inference).
+                             (st.secrets) a cada chamada, evitando 429.
+  • Cliente Cohere Singleton — inicializado uma única vez com COHERE_API_KEY;
+                               command-r-plus para normalização/lógica.
 
-Roteamento recomendado:
+Roteamento:
   ┌──────────────────────────────────────────────────────────────┐
-  │  PDF nativo (texto selec.)  →  Groq  (groq_processor.py)    │
-  │  PDF escaneado / imagem     →  Gemini Vision                 │
-  │                                (gemini_processor.py)         │
-  │  Normalização + Auditoria   →  Groq  (groq_processor.py)    │
+  │  PDF nativo (texto selec.)  →  Gemini (extract_items_from_text via Vision)  │
+  │  PDF escaneado / imagem     →  Gemini Vision (OCR)           │
+  │  Normalização               →  Cohere command-r-plus         │
+  │  Auditoria Final            →  Gemini (janela enorme)        │
   └──────────────────────────────────────────────────────────────┘
 
 Secrets esperados em .streamlit/secrets.toml:
-  GROQ_API_KEY   = "gsk_..."
+  COHERE_API_KEY  = "..."
   GEMINI_API_KEYS = ["AIza...", "AIza...", "AIza..."]
-
-  # Retrocompatibilidade: se GEMINI_API_KEYS não existir,
-  # usa GEMINI_API_KEY (string única) como fallback.
+  # Retrocompatibilidade: GEMINI_API_KEY (string única) como fallback.
 """
 import random
 import logging
@@ -35,44 +32,45 @@ import google.generativeai as genai
 
 logger = logging.getLogger(__name__)
 
-# ── Groq client singleton ─────────────────────────────────────────────────────
+# ── Cohere client singleton ───────────────────────────────────────────────────
 
-_groq_client = None
+_cohere_client = None
 
 
-def get_groq_client():
+def get_cohere_client():
     """
-    Retorna o cliente Groq, inicializando-o na primeira chamada.
-    Lança ValueError se GROQ_API_KEY não estiver nos secrets.
+    Retorna o cliente Cohere, inicializando-o na primeira chamada.
+    Lança ValueError se COHERE_API_KEY não estiver nos secrets.
     """
-    global _groq_client
-    if _groq_client is not None:
-        return _groq_client
+    global _cohere_client
+    if _cohere_client is not None:
+        return _cohere_client
 
     try:
-        from groq import Groq
+        import cohere
     except ImportError as e:
         raise ImportError(
-            "Biblioteca 'groq' não instalada. Execute: pip install groq>=0.9.0"
+            "Biblioteca 'cohere' não instalada. Execute: pip install cohere>=5.0.0"
         ) from e
 
-    api_key = _load_groq_key()
+    api_key = _load_cohere_key()
     if not api_key:
         raise ValueError(
-            "GROQ_API_KEY não encontrada nos secrets. "
+            "COHERE_API_KEY não encontrada nos secrets. "
             "Adicione ao arquivo .streamlit/secrets.toml:\n"
-            "  GROQ_API_KEY = \"gsk_...\""
+            "  COHERE_API_KEY = \"...\""
         )
 
-    _groq_client = Groq(api_key=api_key)
-    logger.info("[LLM Manager] Cliente Groq inicializado com sucesso.")
-    return _groq_client
+    import cohere
+    _cohere_client = cohere.Client(api_key=api_key)
+    logger.info("[LLM Manager] Cliente Cohere inicializado com sucesso.")
+    return _cohere_client
 
 
-def _load_groq_key() -> Optional[str]:
-    """Carrega GROQ_API_KEY dos st.secrets com fallback seguro."""
+def _load_cohere_key() -> Optional[str]:
+    """Carrega COHERE_API_KEY dos st.secrets com fallback seguro."""
     try:
-        return st.secrets.get("GROQ_API_KEY", "") or ""
+        return st.secrets.get("COHERE_API_KEY", "") or ""
     except Exception:
         return ""
 
@@ -82,15 +80,11 @@ def _load_groq_key() -> Optional[str]:
 def _load_gemini_keys() -> list:
     """
     Carrega a lista de chaves Gemini dos secrets.
-
-    Tenta em ordem:
-      1. GEMINI_API_KEYS (lista de strings) — modo pool
-      2. GEMINI_API_KEY  (string única)     — retrocompatibilidade
+    Tenta GEMINI_API_KEYS (lista) e cai para GEMINI_API_KEY (string).
     """
     try:
         keys = st.secrets.get("GEMINI_API_KEYS", None)
         if keys:
-            # Pode vir como lista TOML ou como string separada por vírgula
             if isinstance(keys, (list, tuple)):
                 valid = [k.strip() for k in keys if k and k.strip()]
                 if valid:
@@ -106,7 +100,7 @@ def _load_gemini_keys() -> list:
             return [single]
 
     except Exception as e:
-        logger.warning(f"[LLM Manager] Não foi possível carregar chaves Gemini: {e}")
+        logger.warning("[LLM Manager] Não foi possível carregar chaves Gemini: %s", e)
 
     return []
 
@@ -114,10 +108,6 @@ def _load_gemini_keys() -> list:
 def get_random_gemini_key() -> Optional[str]:
     """
     Escolhe uma chave Gemini aleatória do pool.
-
-    Estratégia: seleção uniforme aleatória — simples, sem estado, sem bloqueio.
-    Em caso de 429, a próxima chamada (retry) provavelmente pega outra chave.
-
     Retorna None se nenhuma chave estiver configurada.
     """
     keys = _load_gemini_keys()
@@ -125,15 +115,13 @@ def get_random_gemini_key() -> Optional[str]:
         logger.error("[LLM Manager] Nenhuma chave Gemini encontrada nos secrets.")
         return None
     chosen = random.choice(keys)
-    logger.debug(f"[LLM Manager] Chave Gemini selecionada: ...{chosen[-6:]}")
+    logger.debug("[LLM Manager] Chave Gemini selecionada: ...%s", chosen[-6:])
     return chosen
 
 
 def configure_gemini_random() -> bool:
     """
     Configura o módulo google.generativeai com uma chave aleatória do pool.
-    Deve ser chamado imediatamente antes de cada requisição ao Gemini.
-
     Retorna True se configurado com sucesso, False caso contrário.
     """
     key = get_random_gemini_key()
@@ -143,15 +131,12 @@ def configure_gemini_random() -> bool:
         genai.configure(api_key=key)
         return True
     except Exception as e:
-        logger.error(f"[LLM Manager] Erro ao configurar Gemini: {e}")
+        logger.error("[LLM Manager] Erro ao configurar Gemini: %s", e)
         return False
 
 
 def configure_gemini_with_key(api_key: str) -> None:
-    """
-    Configura o Gemini com uma chave específica.
-    Usado para retrocompatibilidade com o fluxo antigo de _init_gemini().
-    """
+    """Configura o Gemini com uma chave específica (retrocompatibilidade)."""
     genai.configure(api_key=api_key)
 
 
@@ -159,15 +144,15 @@ def configure_gemini_with_key(api_key: str) -> None:
 
 def get_system_status() -> dict:
     """
-    Retorna um dicionário com o status de cada componente do sistema.
+    Retorna status de cada componente do sistema.
     Útil para exibir indicadores na sidebar.
     """
     gemini_keys = _load_gemini_keys()
-    groq_key    = _load_groq_key()
+    cohere_key  = _load_cohere_key()
 
     return {
-        "groq_configured":    bool(groq_key),
-        "gemini_configured":  bool(gemini_keys),
-        "gemini_key_count":   len(gemini_keys),
-        "groq_key_preview":   f"...{groq_key[-6:]}" if groq_key else "—",
+        "cohere_configured":   bool(cohere_key),
+        "gemini_configured":   bool(gemini_keys),
+        "gemini_key_count":    len(gemini_keys),
+        "cohere_key_preview":  "...{}".format(cohere_key[-6:]) if cohere_key else "—",
     }
