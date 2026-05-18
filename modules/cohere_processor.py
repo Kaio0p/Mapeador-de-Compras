@@ -8,8 +8,8 @@ Pipeline:
   1. Recebe itens brutos extraídos pelo Gemini (por fornecedor)
   2. Agrupa itens equivalentes entre fornecedores (fuzzy matching semântico)
   3. Padroniza nomes, unidades e quantidades
-  4. Aplica Regra de Proporção quando embalagens diferem
-  5. Valida contra catálogo Supabase (se disponível)
+  4. Aplica Regra de Proporção quando embalagens diferem (COM CAUTELA)
+  5. Valida contra catálogo Supabase (se disponível) — nome, unidade e MARCA
 
 Anti-Rate-Limit:
   • Retry exponencial com jitter aleatório
@@ -213,12 +213,15 @@ def _sanity_check_normalized(items: list) -> list:
 
 
 def _fuzzy_match_catalog(item_name: str, catalog: list) -> tuple:
-    """Fuzzy match contra catálogo. Retorna (nome, score, unidade)."""
+    """
+    Fuzzy match contra catálogo. Retorna (nome, score, unidade, marca).
+    """
     if not catalog or not item_name:
-        return None, 0.0, None
+        return None, 0.0, None, None
     best_name  = None
     best_score = 0.0
     best_unit  = None
+    best_marca = None
     item_upper = item_name.upper()
     for entry in catalog:
         nome  = (entry.get("nome_oficial") or "").upper()
@@ -232,43 +235,49 @@ def _fuzzy_match_catalog(item_name: str, catalog: list) -> tuple:
             best_score = score
             best_name  = entry.get("nome_oficial")
             best_unit  = entry.get("unidade_padrao")
-    return best_name, best_score, best_unit
+            # Suporta campos marca_referencia ou marca
+            best_marca = entry.get("marca_referencia") or entry.get("marca") or None
+    return best_name, best_score, best_unit, best_marca
 
 
 def _apply_catalog_matching(items: list, catalog: list) -> list:
     """
     Aplica fuzzy matching contra catálogo Supabase.
-    
-    Se o match for alto (>= THRESHOLD), usa o nome e a unidade do catálogo.
-    Isso garante consistência com o padrão definido pelo usuário no Supabase.
+
+    Se o match for alto (>= RENAME_THRESHOLD):
+      - Adota nome e unidade do catálogo
+      - Adota marca do catálogo SE o item ainda não tem marca definida
+    Se o match for médio (>= FUZZY_THRESHOLD):
+      - Adota apenas a unidade do catálogo
+    Score baixo:
+      - Sinaliza para revisão (não-bloqueante, não marca como suspect)
     """
-    FUZZY_THRESHOLD = 0.75  # Mais tolerante para pegar variações
-    RENAME_THRESHOLD = 0.85  # Só renomeia com alta confiança
-    
+    FUZZY_THRESHOLD  = 0.72   # adota unidade do catálogo
+    RENAME_THRESHOLD = 0.85   # adota nome + unidade + (marca se vazia)
+
     for item in items:
         nome = item.get("item", "")
-        best_name, score, best_unit = _fuzzy_match_catalog(nome, catalog)
+        best_name, score, best_unit, best_marca = _fuzzy_match_catalog(nome, catalog)
         item["catalog_match"] = best_name
         item["catalog_score"] = round(score, 3)
-        
+
         if score >= RENAME_THRESHOLD and best_name:
             # Alta confiança: adota nome e unidade do catálogo
             item["item"] = best_name.upper()
             if best_unit and best_unit.upper() in ALLOWED_UNITS:
                 item["unidade"] = best_unit.upper()
+            # Adota marca do catálogo SOMENTE se o item ainda não tem marca
+            if best_marca and not item.get("marca"):
+                item["marca"] = best_marca
+
         elif score >= FUZZY_THRESHOLD and best_unit:
             # Confiança média: adota apenas a unidade do catálogo
             if best_unit.upper() in ALLOWED_UNITS:
                 item["unidade"] = best_unit.upper()
-        elif score < FUZZY_THRESHOLD:
-            # Sem match: sinaliza para revisão (não-bloqueante)
-            reasons = list(item.get("alert_reason") or [])
-            reasons.append(
-                "Item não encontrado no catálogo (melhor: '{}', {:.0%})".format(best_name, score)
-            )
-            item["alert_reason"] = reasons
-            # NÃO marca como suspect apenas por não estar no catálogo
-            # (muitos itens legítimos podem não estar cadastrados ainda)
+
+        # Score baixo: não sinaliza como suspect — apenas registra internamente
+        # (muitos itens legítimos ainda não estão cadastrados)
+
     return items
 
 
@@ -280,7 +289,7 @@ def _call_cohere_with_retry(
     max_attempts: int = 5,
     base_delay: float = 8.0,
     temperature: float = 0.1,
-    max_tokens: int = 12000,
+    max_tokens: int = 16000,
 ) -> str:
     """
     Chama o Cohere via ClientV2 com retry exponencial + jitter.
@@ -326,7 +335,7 @@ def _call_cohere_with_retry(
             err_str = str(e).lower()
             attempt += 1
 
-            if "429" in str(e) or "rate" in err_str and "limit" in err_str:
+            if "429" in str(e) or ("rate" in err_str and "limit" in err_str):
                 retry_after = None
                 m = re.search(r'retry.after[\":\s]+(\d+)', str(e), re.IGNORECASE)
                 if m:
@@ -377,66 +386,116 @@ _NORMALIZATION_PREAMBLE = """\
 Você é um especialista sênior em mapas de compras empresariais brasileiros.
 Sua tarefa é cruzar orçamentos de múltiplos fornecedores e criar um mapa unificado em JSON.
 
-REGRAS ABSOLUTAS:
+════════════════════════════════════════════════════════════════
+REGRA #0 — ABSOLUTA E INVIOLÁVEL: PRESERVAR TODOS OS DADOS
+════════════════════════════════════════════════════════════════
+Se um fornecedor tem um item com preço em seu orçamento, esse preço DEVE aparecer
+no campo correspondente do fornecedor no mapa. NUNCA coloque null para um fornecedor
+que claramente cotou o item. Esta é a regra mais importante.
 
-1. AGRUPAMENTO: Agrupe itens equivalentes mesmo com nomes diferentes entre fornecedores.
-   Exemplos de equivalência:
-   - "CAIXA ARQUIVO MORTO" = "CX ARQUIVO" = "ARQUIVO MORTO"
-   - "PILHA ALCALINA AA C/4" = "PILHA AA PEQUENA C/4" = "PILHA DURACELL AA"
-   - "BORRACHA PEQUENA" = "BORRACHA BRANCA" (se contexto indicar)
-   - "BALDE 8L" do fornecedor A = "BALDE PLÁSTICO 8L" do fornecedor B
+Exemplos do que NÃO fazer:
+  ✗ JAE cotou BORRACHA por R$1,10 mas você colocou null no JAE → ERRADO
+  ✗ JAE cotou PAPEL A4 por R$24,90 (50 resmas) mas você colocou null no JAE → ERRADO
+  ✗ JAE cotou PILHA AA C/4 por R$21,60 mas você colocou null no JAE → ERRADO
 
-2. NOMES DESCRITIVOS: Use nomes COMPLETOS e PADRONIZADOS em MAIÚSCULAS
-   - INCLUA características relevantes: tipo, tamanho, capacidade, cor
-   - Exemplos bons: "CAIXA DE ARQUIVO MORTO", "BORRACHA PEQUENA", "COPO 200ML PP",
-     "PILHA ALCALINA AA PEQUENA C/4", "BALDE PLASTICO 8L VERDE", "ESTILETE LARGO"
-   - Exemplos ruins: "CAIXA", "BORRACHA", "COPO", "PILHA", "BALDE"
+════════════════════════════════════════════════════════════════
+REGRA #1 — AGRUPAMENTO SEMÂNTICO
+════════════════════════════════════════════════════════════════
+Agrupe itens equivalentes mesmo com nomes diferentes entre fornecedores.
+Exemplos de equivalência:
+  - "CAIXA ARQUIVO MORTO" = "CX ARQUIVO" = "ARQUIVO MORTO"
+  - "PILHA ALCALINA AA C/4" = "PILHA AA PEQUENA C/4" = "PILHA DURACELL AA CARTELA C/4"
+  - "BORRACHA PEQUENA" = "BORRACHA BRANCA PEQUENA" = "BORRACHA 40"
+  - "BALDE 8L" do forn. A = "BALDE PLÁSTICO 8L" do forn. B
 
-3. UNIDADES — SOMENTE: UN, CX, PCT, BB, KG
-   - Resma de papel → PCT
-   - Fardo → PCT
-   - Pacote c/N unidades (pilha c/4, copo c/100) → PCT
-   - Bombona/Galão de LÍQUIDO → BB (ex: hipoclorito 5L em bombona)
-   - BALDE como PRODUTO (balde plástico para uso) → UN (NÃO é BB!)
-   - Item individual → UN
+════════════════════════════════════════════════════════════════
+REGRA #2 — NOMES DESCRITIVOS E PADRONIZADOS
+════════════════════════════════════════════════════════════════
+Use nomes COMPLETOS e PADRONIZADOS em MAIÚSCULAS.
+  - INCLUA: tipo, tamanho, capacidade, material quando relevante
+  - Bons: "CAIXA DE ARQUIVO MORTO", "BORRACHA PEQUENA", "COPO 200ML PP",
+          "PILHA ALCALINA AA PEQUENA C/4", "BALDE PLASTICO 8L VERDE", "ESTILETE LARGO"
+  - Ruins: "CAIXA", "BORRACHA", "COPO", "PILHA", "BALDE"
 
-4. PREÇO POR EMBALAGEM DE VENDA como declarado pelo fornecedor
-   - NUNCA divida o preço pelo conteúdo da embalagem
-   - Pilha c/4 a R$18,64 → preco_unit = 18.64 (NÃO 4.66!)
-   - Copo c/100 a R$5,37 → preco_unit = 5.37
+════════════════════════════════════════════════════════════════
+REGRA #3 — UNIDADES: SOMENTE UN, CX, PCT, BB, KG
+════════════════════════════════════════════════════════════════
+  - Resma de papel → PCT (cada resma = 1 PCT)
+  - Fardo → PCT
+  - Pacote c/N unidades (pilha c/4, copo c/100) → PCT
+  - COPO DESCARTÁVEL: se cotado em peças (100 copos, 200 copos) → UN
+  - Bombona/Galão de LÍQUIDO → BB (ex: hipoclorito 5L em bombona)
+  - BALDE como PRODUTO (balde plástico para uso) → UN ← NUNCA BB!
+  - Item individual avulso → UN
 
-5. PILHAS — REGRA ESPECIAL:
-   - Pilhas são vendidas em PACOTES (c/2, c/4, etc.)
-   - Unidade OBRIGATÓRIA: PCT
-   - Preço: valor do PACOTE inteiro (não dividir por quantidade de pilhas)
-   - Nome deve incluir: tipo (AA/AAA), tamanho (PEQUENA/PALITO), e "C/4" ou "C/2"
-   - AA = PEQUENA, AAA = PALITO
-   - Se o orçamento diz "3 cartelas de pilha AA", quantidade = 3, unidade = PCT
+════════════════════════════════════════════════════════════════
+REGRA #4 — PREÇO POR EMBALAGEM DE VENDA (CRÍTICA)
+════════════════════════════════════════════════════════════════
+O preço unitário é SEMPRE por embalagem de venda, como declarado pelo fornecedor.
+  ✓ Pilha c/4 a R$18,64 → preco_unit = 18.64 (NÃO 4.66!)
+  ✓ Copo c/100 a R$5,37 → preco_unit = 5.37
+  ✓ PAPEL A4: se orçamento mostra 50 resmas a R$24,90 cada → preco_unit = 24.90
+  ✗ NUNCA divida o preço pelo conteúdo da embalagem
+  ✗ NUNCA multiplique preço unitário pela quantidade do lote
 
-6. BALDES — REGRA ESPECIAL:
-   - Balde PLÁSTICO como PRODUTO de limpeza → unidade = UN (é um item individual!)
-   - Balde/Bombona como EMBALAGEM de líquido (ex: tinta, químico) → unidade = BB
-   - "BALDE 8L" para uso → UN | "BALDE DE HIPOCLORITO 5L" → BB
+════════════════════════════════════════════════════════════════
+REGRA #5 — PILHAS (REGRA ESPECIAL)
+════════════════════════════════════════════════════════════════
+  - Vendidas em PACOTES (C/2, C/4, etc.) → unidade = PCT
+  - Preço: valor do PACOTE inteiro (NÃO dividir por número de pilhas)
+  - Nome deve incluir: tipo (AA/AAA), tamanho (PEQUENA/PALITO), e "C/4" ou "C/2"
+    • AA = PEQUENA, AAA = PALITO
+  - AGRUPAMENTO DE PILHAS: agrupe somente se o mesmo fornecedor cotou o mesmo tipo E tamanho (C/4 com C/4, C/2 com C/2)
+  - Se Fornecedor A cotou C/2 a R$11,11 e Fornecedor B cotou C/4 a R$18,64:
+    → São DOIS itens distintos? NÃO: unifique em C/4 aplicando proporção para o fornecedor que cotou C/2:
+      preco_unit do forn. A = R$11,11 × (4/2) = R$22,22 (normalizado para C/4)
+      Registre na observacao: "MINAS: normalizado de C/2 para C/4 (R$11,11 × 2 = R$22,22)"
+  - ATENÇÃO: se o 3º fornecedor cotou a pilha AA C/4, inclua o preço dele!
 
-7. REGRA DE EQUIVALÊNCIA CONTEXTUAL (REGRA DE 3):
-   Se fornecedores cotaram variações de peso/tamanho para a mesma necessidade:
-   
-   PASSO 1 — Eleja a UNIDADE PADRÃO:
-     • Se o item constar na Lista de Referência ou Catálogo, use a unidade/tamanho de lá.
-     • Senão, use a unidade mais comum entre os fornecedores.
-   
-   PASSO 2 — Normalize o preço do fornecedor divergente via REGRA DE 3.
-   
-   PASSO 3 — Registre o ajuste no campo "observacao".
+════════════════════════════════════════════════════════════════
+REGRA #6 — BALDES (REGRA ESPECIAL)
+════════════════════════════════════════════════════════════════
+  - Balde PLÁSTICO como PRODUTO → unidade = UN (é um item individual!)
+  - Balde/Bombona como EMBALAGEM de líquido → unidade = BB
+  - NÃO crie itens de balde que não existem nos orçamentos originais
 
-8. Fornecedores que NÃO cotaram o item → preco_unit: null
-   ATENÇÃO: Se um fornecedor TEM o item no orçamento, DEVE ter preço no mapa!
-   Não descarte dados de nenhum fornecedor.
+════════════════════════════════════════════════════════════════
+REGRA #7 — REGRA DE PROPORÇÃO (COM CAUTELA)
+════════════════════════════════════════════════════════════════
+Aplique proporção SOMENTE quando fornecedores cotaram tamanhos REALMENTE diferentes:
+  EXEMPLO VÁLIDO: Forn A cotou 1KG a R$5, Forn B cotou 500g a R$3 → normalize para 1KG
+  EXEMPLO VÁLIDO: Forn A cotou pilha C/2 a R$11,11, Forn B cotou pilha C/4 a R$18,64 → normalize para C/4
 
-9. MARCAS: Preserve as marcas extraídas. Se vários fornecedores indicam a mesma marca,
-   use-a. Se diferem, use a mais comum ou a do fornecedor de referência.
+  ARMADILHA DO PAPEL A4 — LEIA COM ATENÇÃO:
+    Se o Forn A cotou 1 resma a R$25,50 e o Forn B cotou 1 resma a R$23,00
+    e o Forn C (JAE) cotou "50 resmas" com preço UNITÁRIO de R$24,90 por resma:
+    → O preço UNITÁRIO do JAE já é R$24,90 por resma!
+    → NÃO multiplique por 2 ou por 50!
+    → O mapa deve ter: MINAS=25.50, SMAIS=23.00, JAE=24.90 (todos por resma)
+    → A quantidade no mapa é a necessidade da empresa (ex: 100 resmas)
+    → A observacao pode indicar "JAE cotou em lote de 50 resmas"
 
-10. Retorne SEMPRE um objeto JSON válido com a chave "items"
+════════════════════════════════════════════════════════════════
+REGRA #8 — FORNECEDORES AUSENTES
+════════════════════════════════════════════════════════════════
+  - Fornecedor que NÃO cotou o item → preco_unit: null
+  - Fornecedor que cotou o item → preco_unit: OBRIGATÓRIO ter o valor!
+  - Antes de colocar null, confirme que o fornecedor realmente não tinha o item
+
+════════════════════════════════════════════════════════════════
+REGRA #9 — MARCAS
+════════════════════════════════════════════════════════════════
+  - Preserve as marcas extraídas dos orçamentos
+  - Se o catálogo indica uma marca de referência, use-a como prioridade
+  - Se vários fornecedores indicam a mesma marca, use-a
+  - Se diferem, use a do catálogo → a mais comum → a do fornecedor de referência
+  - Marcas conhecidas: FBOX (arquivo morto), BRW (borracha), ECOCOPPO/CIS (copo),
+    CIS (estilete), CHAMEX (papel A4), DURACELL (pilha)
+
+════════════════════════════════════════════════════════════════
+REGRA #10 — FORMATO DE SAÍDA
+════════════════════════════════════════════════════════════════
+Retorne SEMPRE um objeto JSON válido com a chave "items".
 """
 
 _NORMALIZATION_MESSAGE_TEMPLATE = """\
@@ -446,7 +505,7 @@ FORNECEDORES ({n_fornecedores}): {nomes_fornecedores}
 
 {dados_fornecedores}
 
-LISTA DE REFERÊNCIA (itens que precisamos comprar — use como guia de nomes e quantidades):
+LISTA DE REFERÊNCIA (itens que precisamos comprar — use como guia de nomes, quantidades e unidades):
 {lista_referencia}
 
 {catalogo_context}
@@ -458,24 +517,27 @@ Retorne um objeto JSON com a chave "items" onde cada elemento tem EXATAMENTE est
   "id": inteiro começando em 1,
   "item": "NOME DESCRITIVO COMPLETO MAIÚSCULO",
   "marca": "marca ou null",
-  "quantidade": número float (quantidade de embalagens),
+  "quantidade": número float (quantidade de embalagens que precisamos comprar),
   "unidade": "UN ou CX ou PCT ou BB ou KG",
   "fornecedores": {{
     "{exemplo_forn}": {{"preco_unit": número_ou_null, "obs": null}},
-    ...para CADA fornecedor...
+    ...um campo para CADA fornecedor...
   }},
   "observacao": "nota sobre ajuste de proporção ou null"
 }}
 
-IMPORTANTE:
-- Use os nomes EXATOS dos fornecedores como chaves em "fornecedores": {nomes_fornecedores}
-- TODOS os fornecedores devem aparecer em CADA item (com null se não cotaram)
-- Todos os números devem ser float, NUNCA strings
-- Retorne APENAS o JSON, sem markdown, sem explicações fora do JSON
-- NÃO divida preços de pacotes (pilha c/4 = preço do pacote inteiro)
-- BALDE como produto = UN, NUNCA BB
-- Aplique a REGRA DE PROPORÇÃO sempre que as embalagens diferirem entre fornecedores
-- INCLUA TODOS os itens de TODOS os fornecedores — não pule dados do JAE ou qualquer outro
+CHECKLIST ANTES DE RETORNAR:
+1. ✓ Todos os fornecedores aparecem em CADA item (com null se realmente não cotaram)
+2. ✓ Nenhum fornecedor que cotou o item foi omitido (preco_unit != null)
+3. ✓ Preços de pilhas = valor do pacote inteiro (não dividido por 4 ou 2)
+4. ✓ Papel A4: preço por RESMA individual (não multiplicado pela quantidade do lote)
+5. ✓ Baldes como produto têm unidade=UN
+6. ✓ Copos descartáveis cotados em peças têm unidade=UN
+7. ✓ Nomes incluem características relevantes (tamanho, capacidade, etc.)
+8. ✓ Marcas preservadas conforme catálogo ou orçamentos originais
+9. ✓ NÃO criar itens que não existem nos orçamentos
+
+Nomes exatos dos fornecedores a usar como chaves: {nomes_fornecedores}
 """
 
 
@@ -494,7 +556,7 @@ def normalize_and_match(
       1. Serializa dados de todos os fornecedores (com nomes reais)
       2. Cohere cria mapa unificado aplicando todas as regras
       3. Validação Pydantic + sanity check
-      4. Fuzzy match contra catálogo Supabase (se fornecido)
+      4. Fuzzy match contra catálogo Supabase (nome, unidade e marca)
       5. Guardrail de plausibilidade (retry automático se < 30% dos itens)
 
     Parâmetros:
@@ -514,21 +576,8 @@ def normalize_and_match(
         dados_formatados += json.dumps(items, ensure_ascii=False, indent=2)
         dados_formatados += "\n"
 
-    # Monta contexto do catálogo
-    catalogo_context = ""
-    if catalog:
-        catalog_entries = [
-            "  - {} ({})".format(entry.get("nome_oficial", ""), entry.get("unidade_padrao", "UN"))
-            for entry in catalog[:60]
-            if entry.get("nome_oficial")
-        ]
-        if catalog_entries:
-            catalogo_context = (
-                "CATÁLOGO DE PRODUTOS (referência de nomes e unidades — use como guia):\n"
-                + "\n".join(catalog_entries)
-                + "\n\nSe um item extraído corresponder a um item do catálogo, "
-                "use o NOME e a UNIDADE do catálogo como padrão.\n"
-            )
+    # Monta contexto do catálogo (com marca de referência)
+    catalogo_context = _build_catalog_context_for_prompt(catalog)
 
     ref_str = (
         json.dumps(reference_list, ensure_ascii=False, indent=2)
@@ -554,7 +603,7 @@ def normalize_and_match(
         message=message,
         preamble=_NORMALIZATION_PREAMBLE,
         temperature=0.05,
-        max_tokens=12000,
+        max_tokens=16000,
     )
 
     # Parse — Cohere pode retornar {"items": [...]} ou wrappers alternativos
@@ -571,21 +620,28 @@ def normalize_and_match(
     min_expected = max(1, int(total_input_items * 0.25))
     if len(items) < min_expected:
         logger.warning(
-            "[Cohere/Normalização] Resultado suspeito: %d itens vs %d de entrada (mín. esperado %d). Retentar...",
+            "[Cohere/Normalização] Resultado suspeito: %d itens vs %d de entrada "
+            "(mín. esperado %d). Retentar...",
             len(items), total_input_items, min_expected,
         )
         raw2 = _call_cohere_with_retry(
             message=message,
             preamble=_NORMALIZATION_PREAMBLE,
             temperature=0.05,
-            max_tokens=12000,
+            max_tokens=16000,
         )
         items2 = _parse_response_to_items(raw2)
         if isinstance(items2, list) and len(items2) > len(items):
-            logger.info("[Cohere/Normalização] Retry retornou %d itens (anterior: %d)", len(items2), len(items))
+            logger.info(
+                "[Cohere/Normalização] Retry retornou %d itens (anterior: %d)",
+                len(items2), len(items),
+            )
             items = items2
         else:
-            logger.warning("[Cohere/Normalização] Retry também retornou poucos itens: %d", len(items2) if items2 else 0)
+            logger.warning(
+                "[Cohere/Normalização] Retry também retornou poucos itens: %d",
+                len(items2) if items2 else 0,
+            )
 
     # ── Garante que todos os fornecedores existam em todos os itens ──────────
     for item in items:
@@ -597,13 +653,12 @@ def normalize_and_match(
 
     # ── Remap fornecedor_1..N → nomes reais (caso o modelo use índices) ──────
     key_map = {"fornecedor_{}".format(i + 1): name for i, name in enumerate(suppliers)}
-    # Também mapeia variações comuns
     for i, name in enumerate(suppliers):
         key_map["fornecedor {}".format(i + 1)] = name
-        key_map["forn_{}".format(i + 1)] = name
-        key_map["forn{}".format(i + 1)] = name
-        key_map[name.lower()] = name
-        key_map[name.upper()] = name
+        key_map["forn_{}".format(i + 1)]       = name
+        key_map["forn{}".format(i + 1)]        = name
+        key_map[name.lower()]                   = name
+        key_map[name.upper()]                   = name
 
     for item in items:
         if "fornecedores" in item and isinstance(item["fornecedores"], dict):
@@ -617,11 +672,43 @@ def normalize_and_match(
     items = _validate_normalized_items(items)
     # Sanity check
     items = _sanity_check_normalized(items)
-    # Fuzzy catalog matching (aplica nomes/unidades do catálogo)
+    # Fuzzy catalog matching (aplica nomes, unidades e marcas do catálogo)
     if catalog:
         items = _apply_catalog_matching(items, catalog)
 
     return items
+
+
+def _build_catalog_context_for_prompt(catalog: list) -> str:
+    """
+    Monta o bloco de contexto do catálogo para inserção no prompt do Cohere.
+    Inclui nome_oficial, unidade_padrao e marca_referencia.
+    """
+    if not catalog:
+        return ""
+    entries = []
+    for entry in catalog[:60]:
+        nome = entry.get("nome_oficial", "")
+        if not nome:
+            continue
+        und   = entry.get("unidade_padrao", "UN")
+        marca = entry.get("marca_referencia") or entry.get("marca", "")
+        if marca:
+            entries.append("  - {} ({}) [marca: {}]".format(nome, und, marca))
+        else:
+            entries.append("  - {} ({})".format(nome, und))
+
+    if not entries:
+        return ""
+
+    return (
+        "CATÁLOGO OFICIAL DE PRODUTOS (nomes, unidades e marcas de referência — prioridade máxima):\n"
+        + "\n".join(entries)
+        + "\n\nSe um item extraído corresponder a um do catálogo:\n"
+        "  1. Use o NOME EXATO do catálogo\n"
+        "  2. Use a UNIDADE do catálogo\n"
+        "  3. Use a MARCA do catálogo (se o item não tiver marca definida)\n"
+    )
 
 
 def _parse_response_to_items(raw: str) -> list:
