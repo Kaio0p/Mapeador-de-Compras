@@ -225,10 +225,23 @@ def _derive_rules(nomenclature, unit_conv):
         rules.append("Não incluir detalhes de embalagem entre parênteses no nome")
     if any(c["original_unit"] == "UN" and c["corrected_unit"] == "PCT" for c in unit_conv):
         rules.append("Itens em pacote/conjunto (c/4, c/50 etc.) devem usar PCT, não UN individual")
+    # Pilhas: AA = PEQUENA, AAA = PALITO
     for c in nomenclature:
-        if "PEQUENA" in c["original"] and "NORMAL" in c["corrected"] and "PILHA" in c["original"]:
-            rules.append("Pilha AA = NORMAL, Pilha AAA = PALITO")
-            break
+        if "PILHA" in c.get("original", "") or "PILHA" in c.get("corrected", ""):
+            if "AA" in c.get("corrected", "") and "PEQUENA" in c.get("corrected", ""):
+                rules.append("Pilha AA = PEQUENA, Pilha AAA = PALITO. Sempre incluir C/4 ou C/2 no nome.")
+                break
+            if "NORMAL" in c.get("corrected", ""):
+                rules.append("Pilha AA = PEQUENA (ou NORMAL), Pilha AAA = PALITO. Incluir C/4 ou C/2.")
+                break
+
+    # Regras fixas importantes (sempre incluídas)
+    rules.append("PILHAS: unidade=PCT, preço do PACOTE inteiro (não dividir por 4). Nome inclui 'C/4'.")
+    rules.append("BALDES como PRODUTO: unidade=UN (não BB). BB é só para embalagem de líquido.")
+    rules.append("MARCAS: sempre extrair e preservar (DURACELL, CHAMEX, BRW, CIS, FBOX, ECOCOPPO).")
+    rules.append("NOMES DESCRITIVOS: incluir tipo/tamanho relevante (CAIXA DE ARQUIVO MORTO, não só CAIXA).")
+    rules.append("TODOS os fornecedores devem ter seus dados incluídos — não omitir nenhum.")
+
     return rules
 
 
