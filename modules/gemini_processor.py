@@ -280,76 +280,89 @@ def _call_vision_with_retry(
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
 _VISION_PROMPT = (
-    "Voce e um assistente especializado em analise de orcamentos de compras empresariais brasileiros.\n\n"
-    "Analise com EXTREMA atencao as imagens deste orcamento e extraia TODOS os itens cotados, sem excecao.\n"
-    "Retorne APENAS um array JSON valido, sem markdown, sem texto extra.\n\n"
+    "Você é um assistente especializado em análise de orçamentos de compras empresariais brasileiros.\n\n"
+    "Analise com EXTREMA atenção TODAS as partes da imagem/documento e extraia TODOS os itens cotados, sem exceção.\n"
+    "Retorne APENAS um array JSON válido, sem markdown, sem texto extra.\n\n"
     "Cada objeto no array deve ter EXATAMENTE estes campos:\n"
-    "- \"item\": nome DESCRITIVO em MAIUSCULAS incluindo caracteristicas importantes\n"
+    "- \"item\": nome DESCRITIVO em MAIÚSCULAS incluindo características importantes\n"
     "  Exemplos: \"CAIXA DE ARQUIVO MORTO\", \"BORRACHA PEQUENA\", \"COPO 200ML PP\",\n"
     "            \"PILHA ALCALINA AA C/4\", \"BALDE PLASTICO 8L\", \"PAPEL A4\"\n"
     "  INCLUA: tipo, tamanho, capacidade, material quando relevante\n"
-    "  NAO inclua: codigo interno, referencia do fornecedor\n\n"
+    "  NÃO inclua: código interno, referência do fornecedor\n\n"
     "- \"marca\": string ou null — a MARCA do produto (ex: DURACELL, CHAMEX, BRW, CIS, ECOCOPPO, FBOX)\n"
     "  IMPORTANTE: Extraia a marca SEMPRE que estiver presente no documento.\n"
-    "  A marca geralmente aparece ao lado do nome do produto ou em coluna propria.\n\n"
-    "- \"quantidade\": numero (float) — quantidade de embalagens cotadas\n"
-    "  Se o orcamento mostra \"3 PCT\" de pilhas, quantidade = 3\n"
-    "  Se nao especificada, use 1\n\n"
+    "  A marca geralmente aparece ao lado do nome do produto ou em coluna própria.\n"
+    "  Use EXATAMENTE a marca que aparece no documento — não invente nem substitua.\n\n"
+    "- \"quantidade\": número (float) — quantidade de embalagens cotadas\n"
+    "  Se o orçamento mostra \"3 PCT\" de pilhas, quantidade = 3\n"
+    "  Se não especificada, use 1\n\n"
     "- \"unidade\": APENAS \"UN\", \"CX\", \"PCT\", \"BB\" ou \"KG\"\n"
     "  REGRAS DE UNIDADE:\n"
-    "  - Resma de papel → PCT\n"
+    "  - Resma de papel → PCT (cada resma é 1 PCT)\n"
     "  - Fardo → PCT\n"
-    "  - Pacote c/N unidades (pilha c/4, copo c/100, etc.) → PCT\n"
-    "  - Bombona/Galao de LIQUIDO → BB (ex: hipoclorito 5L, detergente 5L)\n"
-    "  - BALDE como PRODUTO (balde plastico, balde de limpeza) → UN (e um produto individual)\n"
-    "  - BALDE/BOMBONA como EMBALAGEM de liquido → BB\n"
+    "  - Pacote c/N unidades (pilha c/4, etc.) → PCT\n"
+    "  - COPO DESCARTÁVEL: se a quantidade é em PEÇAS (ex: 100 copos) → UN; se em pacote/manga → PCT\n"
+    "  - Bombona/Galão de LÍQUIDO → BB (ex: hipoclorito 5L, detergente 5L)\n"
+    "  - BALDE como PRODUTO (balde plástico, balde de limpeza) → UN (é um produto individual)\n"
+    "  - BALDE/BOMBONA como EMBALAGEM de líquido → BB\n"
     "  - Item individual avulso → UN\n\n"
-    "- \"preco_unitario\": numero (float) — preco POR EMBALAGEM DE VENDA exatamente como no documento\n"
-    "  REGRA CRITICA DE PRECOS:\n"
-    "  - Pilha c/4 = R$18,64 → preco_unitario = 18.64 (preco do PACOTE, NAO divida por 4!)\n"
-    "  - Copo c/100 = R$5,37 → preco_unitario = 5.37 (preco do pacote de 100)\n"
-    "  - NUNCA divida o preco pelo numero de itens dentro da embalagem\n"
-    "  - O preco e SEMPRE por embalagem de venda como consta no orcamento\n\n"
-    "- \"preco_total\": numero ou null — valor total da linha (qtd x preco_unitario)\n\n"
-    "- \"observacao\": string ou null — apenas observacoes do orcamento (frete, prazo, validade)\n\n"
-    "REGRAS CRITICAS:\n"
-    "- Extraia ABSOLUTAMENTE TODOS os itens do orcamento — nao pule nenhum\n"
-    "- Todos os numeros como float, NUNCA strings\n"
-    "- Preco por embalagem de venda — NAO normalize, NAO divida\n"
-    "- Use null para campos ausentes — NUNCA invente valores\n"
-    "- Ignore cabecalhos, totais e rodapes\n"
-    "- MARCAS: extraia sempre que visiveis no documento (muitas vezes estao em coluna separada)\n"
-    "- Para PILHAS: manter como pacote (C/4), unidade=PCT, preco do pacote inteiro\n"
-    "- Para BALDES (produto): unidade=UN, NAO use BB para baldes que sao o produto em si\n\n"
+    "- \"preco_unitario\": número (float) — preço POR EMBALAGEM DE VENDA exatamente como no documento\n"
+    "  REGRA CRÍTICA DE PREÇOS — LEIA COM ATENÇÃO:\n"
+    "  - Pilha c/4 = R$18,64 → preco_unitario = 18.64 (preço do PACOTE, NÃO divida por 4!)\n"
+    "  - Copo c/100 = R$5,37 → preco_unitario = 5.37 (preço do pacote de 100)\n"
+    "  - PAPEL A4: se o orçamento mostra 50 resmas por R$24,90 cada → preco_unitario = 24.90 (por resma)\n"
+    "  - NUNCA divida o preço pelo número de itens dentro da embalagem\n"
+    "  - O preço é SEMPRE por embalagem de venda como consta no orçamento\n"
+    "  - Se não houver preço visível para um item, use null — NUNCA invente valor\n\n"
+    "- \"preco_total\": número ou null — valor total da linha (qtd x preco_unitario)\n\n"
+    "- \"observacao\": string ou null — apenas observações do orçamento (frete, prazo, validade)\n\n"
+    "REGRAS CRÍTICAS OBRIGATÓRIAS:\n"
+    "- Extraia ABSOLUTAMENTE TODOS os itens do orçamento — nenhum pode ser pulado\n"
+    "- TODOS os preços visíveis DEVEM ser extraídos — se o item tem preço no documento, preco_unitario NUNCA pode ser null\n"
+    "- Todos os números como float, NUNCA strings\n"
+    "- Preço por embalagem de venda — NÃO normalize, NÃO divida\n"
+    "- Use null APENAS para campos genuinamente ausentes no documento — NUNCA invente valores\n"
+    "- Ignore cabeçalhos, totais e rodapés\n"
+    "- MARCAS: extraia sempre que visíveis no documento — use EXATAMENTE como escrito\n"
+    "- Para PILHAS: manter como pacote (C/4 ou C/2), unidade=PCT, preço do pacote inteiro\n"
+    "  Se o orçamento tem pilhas C/2 E pilhas C/4 do mesmo tipo, extraia SEPARADAMENTE com seus preços\n"
+    "- Para BALDES (produto): unidade=UN, NÃO use BB para baldes que são o produto em si\n"
+    "- NÃO crie itens que não existem no documento — nenhuma alucinação é tolerada\n\n"
     "{preferences}"
 )
 
 _AUDIT_SYSTEM_PROMPT = (
-    "Voce e um Auditor de Compras senior com acesso a uma enorme janela de contexto.\n\n"
-    "Sua missao: cruzar o mapa de compras normalizado com os textos/imagens "
-    "ORIGINAIS dos orcamentos. Voce deve identificar QUALQUER discrepancia entre o que "
-    "foi extraido/normalizado e o que realmente esta nos documentos originais.\n\n"
+    "Você é um Auditor de Compras sênior com acesso a uma enorme janela de contexto.\n\n"
+    "Sua missão: cruzar o mapa de compras normalizado com os textos/imagens "
+    "ORIGINAIS dos orçamentos. Você deve identificar QUALQUER discrepância entre o que "
+    "foi extraído/normalizado e o que realmente está nos documentos originais.\n\n"
     "Tipos de anomalias a detectar:\n"
-    "1. Alucinacao de preco: preco no mapa difere do documento original\n"
-    "2. Alucinacao de unidade: unidade no mapa nao corresponde ao documento\n"
-    "3. Erro de proporcao: precos de pacotes divididos incorretamente\n"
-    "4. Preco absurdo para o contexto: caneta R$50, papel A4 R$500\n"
-    "5. Inconsistencia matematica: quantidade x preco_unit != preco_total no documento\n"
-    "6. Item inventado: item no mapa que nao existe em nenhum orcamento original\n"
-    "7. Preco negativo ou zero onde nao faz sentido\n"
-    "8. Dados de fornecedor faltando: se um fornecedor cotou o item no PDF mas o mapa mostra null\n\n"
+    "1. Alucinação de preço: preço no mapa difere do documento original\n"
+    "2. Alucinação de unidade: unidade no mapa não corresponde ao documento\n"
+    "3. Erro de proporção: preços de pacotes divididos incorretamente\n"
+    "4. Preço absurdo para o contexto: caneta R$50, papel A4 R$500\n"
+    "5. Inconsistência matemática: quantidade x preco_unit != preco_total no documento\n"
+    "6. Item inventado: item no mapa que não existe em nenhum orçamento original\n"
+    "7. Preço negativo ou zero onde não faz sentido\n"
+    "8. Dados de fornecedor faltando: se um fornecedor cotou o item no PDF mas o mapa mostra null\n"
+    "9. Papel A4 com preço dobrado: se JAE cotou 50 resmas a R$X cada, o preço unitário é R$X, não R$2X\n"
+    "10. Pilhas com preço dividido: se MINAS cotou C/2 a R$11, o preço C/2 é R$11 (não dividir)\n\n"
     "Retorne SEMPRE um objeto JSON com a chave \"items\" contendo TODOS os itens -- "
-    "incluindo os que estao OK (is_suspect: false). "
-    "NUNCA altere precos, quantidades ou nomes. APENAS atualize is_suspect e alert_reason."
+    "incluindo os que estão OK (is_suspect: false). "
+    "NUNCA altere preços, quantidades ou nomes. APENAS atualize is_suspect e alert_reason."
 )
 
 _AUDIT_USER_PROMPT = (
-    "Audite o mapa de compras abaixo cruzando com os orcamentos originais.\n\n"
+    "Audite o mapa de compras abaixo cruzando com os orçamentos originais.\n\n"
     "Para cada item:\n"
     "- Se OK: \"is_suspect\": false, \"alert_reason\": []\n"
     "- Se anomalia: \"is_suspect\": true, \"alert_reason\": [lista de strings descrevendo o problema]\n\n"
-    "NAO remova itens. NAO altere precos ou quantidades. APENAS is_suspect e alert_reason.\n\n"
-    "=== ORCAMENTOS ORIGINAIS ===\n"
+    "NÃO remova itens. NÃO altere preços ou quantidades. APENAS is_suspect e alert_reason.\n\n"
+    "VERIFIQUE ESPECIALMENTE:\n"
+    "- Se algum fornecedor tem preço no orçamento original mas está como null no mapa → é anomalia!\n"
+    "- Papel A4: preço por resma (não multiplicado por quantidade de resmas do lote)\n"
+    "- Pilhas: preço por pacote (C/2 ou C/4 como cotado), não dividido por número de pilhas\n\n"
+    "=== ORÇAMENTOS ORIGINAIS ===\n"
     "{original_texts}\n\n"
     "=== MAPA NORMALIZADO (a auditar) ===\n"
     "{normalized_json}\n\n"
@@ -379,19 +392,7 @@ def extract_items_from_images(
     A chave Gemini é rotacionada automaticamente a cada tentativa via pool.
     """
     # Monta contexto do catálogo para injetar no prompt
-    catalog_context = ""
-    if catalog:
-        catalog_names = [entry.get("nome_oficial", "") for entry in catalog if entry.get("nome_oficial")]
-        if catalog_names:
-            catalog_context = (
-                "\n\nCATALOGO DE REFERENCIA (use estes nomes como guia para padronizar):\n"
-                + "\n".join("  - {} ({})".format(
-                    entry.get("nome_oficial", ""),
-                    entry.get("unidade_padrao", "UN")
-                ) for entry in catalog[:50] if entry.get("nome_oficial"))
-                + "\n\nSe um item do orcamento corresponder a um item do catalogo, "
-                "use o nome do catalogo como referencia (pode adaptar minimamente).\n"
-            )
+    catalog_context = _build_catalog_context(catalog)
 
     vision_prompt = _VISION_PROMPT.format(
         preferences=(preferences_context or "Nenhuma preferência registrada ainda.") + catalog_context
@@ -425,18 +426,7 @@ def extract_items_from_jpeg_images(
     Extrai itens de imagens JPEG via Gemini Vision.
     A chave Gemini e rotacionada automaticamente a cada tentativa via pool.
     """
-    catalog_context = ""
-    if catalog:
-        catalog_names = [entry.get("nome_oficial", "") for entry in catalog if entry.get("nome_oficial")]
-        if catalog_names:
-            catalog_context = (
-                "\n\nCATALOGO DE REFERENCIA (use estes nomes como guia para padronizar):\n"
-                + "\n".join("  - {} ({})".format(
-                    entry.get("nome_oficial", ""),
-                    entry.get("unidade_padrao", "UN")
-                ) for entry in catalog[:50] if entry.get("nome_oficial"))
-                + "\n"
-            )
+    catalog_context = _build_catalog_context(catalog)
 
     vision_prompt = _VISION_PROMPT.format(
         preferences=(preferences_context or "Nenhuma preferencia registrada ainda.") + catalog_context
@@ -448,6 +438,36 @@ def extract_items_from_jpeg_images(
     items = _parse_json_response(raw)
     items = _validate_extraction_items(items)
     return _post_process_items(items)
+
+
+def _build_catalog_context(catalog: list) -> str:
+    """
+    Monta o bloco de contexto do catálogo Supabase para injeção no prompt.
+    Inclui nome_oficial, unidade_padrao e marca_referencia (se disponível).
+    """
+    if not catalog:
+        return ""
+    entries = []
+    for entry in catalog[:60]:
+        nome = entry.get("nome_oficial", "")
+        if not nome:
+            continue
+        und   = entry.get("unidade_padrao", "UN")
+        marca = entry.get("marca_referencia") or entry.get("marca", "")
+        if marca:
+            entries.append("  - {} ({}) [marca: {}]".format(nome, und, marca))
+        else:
+            entries.append("  - {} ({})".format(nome, und))
+
+    if not entries:
+        return ""
+
+    return (
+        "\n\nCATÁLOGO DE REFERÊNCIA (nomes, unidades e marcas OFICIAIS — use como guia PRIORITÁRIO):\n"
+        + "\n".join(entries)
+        + "\n\nSe um item do orçamento corresponder a um item do catálogo, "
+        "use EXATAMENTE o nome, a unidade e a marca do catálogo.\n"
+    )
 
 
 def audit_purchase_map(
