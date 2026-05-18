@@ -11,13 +11,8 @@ Este modulo tem duas responsabilidades:
   2. Auditoria Final Anti-Alucinacao:
        audit_purchase_map(normalized_items, original_texts)
        O Gemini usa sua enorme janela de contexto para cruzar o JSON
-       normalizado pelo Groq com os textos/imagens ORIGINAIS dos orcamentos,
-       detectando alucinacoes logicas, matematicas e de unidade que o
-       sanity check local nao consegue pegar semanticamente.
-
-Fora do escopo (movido para groq_processor.py):
-  - extract_items_from_text()  -> Groq LPU (velocidade + 128k context)
-  - normalize_and_match()      -> Groq LPU (velocidade + 128k context)
+       normalizado pelo Cohere com os textos/imagens ORIGINAIS dos orcamentos,
+       detectando alucinacoes logicas, matematicas e de unidade.
 
 Anti-Rate-Limit:
   - Pool de chaves: antes de CADA tentativa, rotaciona via get_random_gemini_key()
@@ -38,7 +33,7 @@ from modules.llm_manager import get_random_gemini_key
 
 logger = logging.getLogger(__name__)
 
-# Alias para o modelo mais recente
+# Alias para o modelo mais recente (puxa automaticamente a última versão do Flash)
 _MODEL_NAME = "gemini-flash-latest"
 
 ALLOWED_UNITS = ["UN", "CX", "PCT", "BB", "KG"]
@@ -107,13 +102,16 @@ def _normalize_unit(unit: str) -> str:
         "CX": "CX", "CAIXA": "CX",
         "PCT": "PCT", "PACOTE": "PCT", "PC": "PCT", "PAC": "PCT",
         "FD": "PCT", "FARDO": "PCT", "RESMA": "PCT", "RSM": "PCT",
-        "BB": "BB", "BOMBONA": "BB", "BALDE": "BB", "BD": "BB",
-        "GL": "BB", "GALAO": "BB",
+        "BB": "BB", "BOMBONA": "BB", "BD": "BB",
+        "GL": "BB", "GALAO": "BB", "GALÃO": "BB",
         "KG": "KG", "KILO": "KG", "QUILO": "KG",
         "L": "UN", "LT": "UN", "LITRO": "UN",
         "M": "UN", "MT": "UN", "METRO": "UN",
         "M2": "UN", "ROLO": "UN", "RL": "UN",
     }
+    # NOTA: "BALDE" NÃO é mapeado aqui propositalmente.
+    # Um balde pode ser o PRODUTO (balde plástico → UN) ou a EMBALAGEM de um líquido (→ BB).
+    # A decisão é feita pelo contexto no prompt da IA, não aqui.
     return mapping.get(u, "UN")
 
 
@@ -283,40 +281,63 @@ def _call_vision_with_retry(
 
 _VISION_PROMPT = (
     "Voce e um assistente especializado em analise de orcamentos de compras empresariais brasileiros.\n\n"
-    "Analise com atencao as imagens deste orcamento e extraia TODOS os itens cotados.\n"
+    "Analise com EXTREMA atencao as imagens deste orcamento e extraia TODOS os itens cotados, sem excecao.\n"
     "Retorne APENAS um array JSON valido, sem markdown, sem texto extra.\n\n"
     "Cada objeto no array deve ter EXATAMENTE estes campos:\n"
-    "- \"item\": nome CURTO e SIMPLES em MAIUSCULAS\n"
-    "  Exemplos: \"COPO 200ML PP\", \"PAPEL A4 C/500FLS\", \"HIPOCLORITO 5% 5L\", \"PILHA ALCALINA AA\"\n"
-    "- \"marca\": string ou null -- UMA UNICA marca principal\n"
-    "- \"quantidade\": numero (float) -- NUNCA string\n"
+    "- \"item\": nome DESCRITIVO em MAIUSCULAS incluindo caracteristicas importantes\n"
+    "  Exemplos: \"CAIXA DE ARQUIVO MORTO\", \"BORRACHA PEQUENA\", \"COPO 200ML PP\",\n"
+    "            \"PILHA ALCALINA AA C/4\", \"BALDE PLASTICO 8L\", \"PAPEL A4\"\n"
+    "  INCLUA: tipo, tamanho, capacidade, material quando relevante\n"
+    "  NAO inclua: codigo interno, referencia do fornecedor\n\n"
+    "- \"marca\": string ou null — a MARCA do produto (ex: DURACELL, CHAMEX, BRW, CIS, ECOCOPPO, FBOX)\n"
+    "  IMPORTANTE: Extraia a marca SEMPRE que estiver presente no documento.\n"
+    "  A marca geralmente aparece ao lado do nome do produto ou em coluna propria.\n\n"
+    "- \"quantidade\": numero (float) — quantidade de embalagens cotadas\n"
+    "  Se o orcamento mostra \"3 PCT\" de pilhas, quantidade = 3\n"
+    "  Se nao especificada, use 1\n\n"
     "- \"unidade\": APENAS \"UN\", \"CX\", \"PCT\", \"BB\" ou \"KG\"\n"
-    "  Resma -> PCT | Fardo -> PCT | Pacote c/N -> PCT | Bombona/Balde/Galao -> BB | Outros -> UN\n"
-    "- \"preco_unitario\": numero (float) -- preco POR EMBALAGEM exatamente como no documento\n"
-    "  NAO divida: pilha c/4 = R$18,64 -> 18.64 (nao 4.66)\n"
-    "- \"preco_total\": numero ou null\n"
-    "- \"observacao\": string ou null -- apenas observacoes do orcamento (frete, prazo, validade)\n\n"
+    "  REGRAS DE UNIDADE:\n"
+    "  - Resma de papel → PCT\n"
+    "  - Fardo → PCT\n"
+    "  - Pacote c/N unidades (pilha c/4, copo c/100, etc.) → PCT\n"
+    "  - Bombona/Galao de LIQUIDO → BB (ex: hipoclorito 5L, detergente 5L)\n"
+    "  - BALDE como PRODUTO (balde plastico, balde de limpeza) → UN (e um produto individual)\n"
+    "  - BALDE/BOMBONA como EMBALAGEM de liquido → BB\n"
+    "  - Item individual avulso → UN\n\n"
+    "- \"preco_unitario\": numero (float) — preco POR EMBALAGEM DE VENDA exatamente como no documento\n"
+    "  REGRA CRITICA DE PRECOS:\n"
+    "  - Pilha c/4 = R$18,64 → preco_unitario = 18.64 (preco do PACOTE, NAO divida por 4!)\n"
+    "  - Copo c/100 = R$5,37 → preco_unitario = 5.37 (preco do pacote de 100)\n"
+    "  - NUNCA divida o preco pelo numero de itens dentro da embalagem\n"
+    "  - O preco e SEMPRE por embalagem de venda como consta no orcamento\n\n"
+    "- \"preco_total\": numero ou null — valor total da linha (qtd x preco_unitario)\n\n"
+    "- \"observacao\": string ou null — apenas observacoes do orcamento (frete, prazo, validade)\n\n"
     "REGRAS CRITICAS:\n"
+    "- Extraia ABSOLUTAMENTE TODOS os itens do orcamento — nao pule nenhum\n"
     "- Todos os numeros como float, NUNCA strings\n"
-    "- Preco por embalagem de venda -- nao normalize, nao divida\n"
-    "- Use null para campos ausentes -- NUNCA invente\n"
-    "- Ignore cabecalhos, totais e rodapes\n\n"
+    "- Preco por embalagem de venda — NAO normalize, NAO divida\n"
+    "- Use null para campos ausentes — NUNCA invente valores\n"
+    "- Ignore cabecalhos, totais e rodapes\n"
+    "- MARCAS: extraia sempre que visiveis no documento (muitas vezes estao em coluna separada)\n"
+    "- Para PILHAS: manter como pacote (C/4), unidade=PCT, preco do pacote inteiro\n"
+    "- Para BALDES (produto): unidade=UN, NAO use BB para baldes que sao o produto em si\n\n"
     "{preferences}"
 )
 
 _AUDIT_SYSTEM_PROMPT = (
     "Voce e um Auditor de Compras senior com acesso a uma enorme janela de contexto.\n\n"
-    "Sua missao: cruzar o mapa de compras normalizado (produzido pelo Groq) com os textos "
-    "ORIGINAIS dos orcamentos. Voce deve identificar QUALQUER discrepancia entre o que o "
-    "Groq extraiu/normalizou e o que realmente esta nos documentos originais.\n\n"
+    "Sua missao: cruzar o mapa de compras normalizado com os textos/imagens "
+    "ORIGINAIS dos orcamentos. Voce deve identificar QUALQUER discrepancia entre o que "
+    "foi extraido/normalizado e o que realmente esta nos documentos originais.\n\n"
     "Tipos de anomalias a detectar:\n"
     "1. Alucinacao de preco: preco no mapa difere do documento original\n"
     "2. Alucinacao de unidade: unidade no mapa nao corresponde ao documento\n"
-    "3. Erro de proporcao: 2 pacotes de 500g tratados como 1KG mas preco nao foi ajustado\n"
+    "3. Erro de proporcao: precos de pacotes divididos incorretamente\n"
     "4. Preco absurdo para o contexto: caneta R$50, papel A4 R$500\n"
     "5. Inconsistencia matematica: quantidade x preco_unit != preco_total no documento\n"
     "6. Item inventado: item no mapa que nao existe em nenhum orcamento original\n"
-    "7. Preco negativo ou zero onde nao faz sentido\n\n"
+    "7. Preco negativo ou zero onde nao faz sentido\n"
+    "8. Dados de fornecedor faltando: se um fornecedor cotou o item no PDF mas o mapa mostra null\n\n"
     "Retorne SEMPRE um objeto JSON com a chave \"items\" contendo TODOS os itens -- "
     "incluindo os que estao OK (is_suspect: false). "
     "NUNCA altere precos, quantidades ou nomes. APENAS atualize is_suspect e alert_reason."
@@ -330,7 +351,7 @@ _AUDIT_USER_PROMPT = (
     "NAO remova itens. NAO altere precos ou quantidades. APENAS is_suspect e alert_reason.\n\n"
     "=== ORCAMENTOS ORIGINAIS ===\n"
     "{original_texts}\n\n"
-    "=== MAPA NORMALIZADO PELO GROQ (a auditar) ===\n"
+    "=== MAPA NORMALIZADO (a auditar) ===\n"
     "{normalized_json}\n\n"
     "Retorne objeto JSON com chave \"items\" contendo TODOS os {n_items} itens auditados."
 )
@@ -342,6 +363,7 @@ def extract_items_from_images(
     images_b64: list,
     preferences_context: str = "",
     text_fallback: str = "",
+    catalog: list = None,
 ) -> list:
     """
     Extrai itens de PDF escaneado, imagens PNG, ou PDF nativo via Gemini.
@@ -352,20 +374,35 @@ def extract_items_from_images(
       preferences_context — contexto de correções aprendidas.
       text_fallback       — texto extraído de um PDF nativo (quando não há imagens).
                             Se fornecido, o Gemini lê o texto diretamente sem visão.
+      catalog             — catálogo de produtos do Supabase para contextualizar nomes.
 
     A chave Gemini é rotacionada automaticamente a cada tentativa via pool.
     """
+    # Monta contexto do catálogo para injetar no prompt
+    catalog_context = ""
+    if catalog:
+        catalog_names = [entry.get("nome_oficial", "") for entry in catalog if entry.get("nome_oficial")]
+        if catalog_names:
+            catalog_context = (
+                "\n\nCATALOGO DE REFERENCIA (use estes nomes como guia para padronizar):\n"
+                + "\n".join("  - {} ({})".format(
+                    entry.get("nome_oficial", ""),
+                    entry.get("unidade_padrao", "UN")
+                ) for entry in catalog[:50] if entry.get("nome_oficial"))
+                + "\n\nSe um item do orcamento corresponder a um item do catalogo, "
+                "use o nome do catalogo como referencia (pode adaptar minimamente).\n"
+            )
+
     vision_prompt = _VISION_PROMPT.format(
-        preferences=preferences_context or "Nenhuma preferência registrada ainda."
+        preferences=(preferences_context or "Nenhuma preferência registrada ainda.") + catalog_context
     )
 
     if text_fallback and not images_b64:
         # PDF nativo — envia texto diretamente (sem imagem)
-        # O Gemini usa sua janela de contexto longa para ler o texto completo
         text_prompt = (
             vision_prompt
             + "\n\nORÇAMENTO (texto extraído do PDF):\n"
-            + text_fallback[:60000]  # limite conservador para tokens
+            + text_fallback[:60000]
         )
         parts = [text_prompt]
     else:
@@ -379,13 +416,30 @@ def extract_items_from_images(
     return _post_process_items(items)
 
 
-def extract_items_from_jpeg_images(images_b64: list, preferences_context: str = "") -> list:
+def extract_items_from_jpeg_images(
+    images_b64: list,
+    preferences_context: str = "",
+    catalog: list = None,
+) -> list:
     """
     Extrai itens de imagens JPEG via Gemini Vision.
     A chave Gemini e rotacionada automaticamente a cada tentativa via pool.
     """
+    catalog_context = ""
+    if catalog:
+        catalog_names = [entry.get("nome_oficial", "") for entry in catalog if entry.get("nome_oficial")]
+        if catalog_names:
+            catalog_context = (
+                "\n\nCATALOGO DE REFERENCIA (use estes nomes como guia para padronizar):\n"
+                + "\n".join("  - {} ({})".format(
+                    entry.get("nome_oficial", ""),
+                    entry.get("unidade_padrao", "UN")
+                ) for entry in catalog[:50] if entry.get("nome_oficial"))
+                + "\n"
+            )
+
     vision_prompt = _VISION_PROMPT.format(
-        preferences=preferences_context or "Nenhuma preferencia registrada ainda."
+        preferences=(preferences_context or "Nenhuma preferencia registrada ainda.") + catalog_context
     )
     parts = [vision_prompt] + [
         {"mime_type": "image/jpeg", "data": b64} for b64 in images_b64
@@ -396,23 +450,27 @@ def extract_items_from_jpeg_images(images_b64: list, preferences_context: str = 
     return _post_process_items(items)
 
 
-def audit_purchase_map(normalized_items: list, original_texts: dict = None) -> list:
+def audit_purchase_map(
+    normalized_items: list,
+    original_texts: dict = None,
+    original_images: dict = None,
+) -> list:
     """
     Agente Auditor Final -- usa a enorme janela de contexto do Gemini para
-    cruzar o JSON normalizado pelo Groq com os textos ORIGINAIS dos orcamentos.
+    cruzar o JSON normalizado com os textos/imagens ORIGINAIS dos orcamentos.
 
     Esta abordagem detecta anomalias semanticas e logicas que o sanity check
     local nao consegue identificar, como:
-      - Precos que o Groq extraiu errado em relacao ao documento original
+      - Precos extraidos errado em relacao ao documento original
       - Erros de proporcao onde o preco nao foi ajustado corretamente
       - Itens inventados que nao existem em nenhum orcamento original
       - Inconsistencias matematicas (qtd x preco != total no documento)
+      - Dados de fornecedor faltando (PDF tem mas o mapa nao)
 
     Parametros:
-      normalized_items -- lista retornada por groq_processor.normalize_and_match()
+      normalized_items -- lista retornada por cohere_processor.normalize_and_match()
       original_texts   -- dict {nome_fornecedor: texto_do_pdf} para cross-reference.
-                          Pode conter PDFs nativos (texto) ou descricao de OCR.
-                          Se None, o Gemini audita apenas pelo contexto semantico.
+      original_images  -- dict {nome_fornecedor: [lista_b64_images]} para auditoria visual.
 
     Retorna a mesma lista com is_suspect e alert_reason atualizados.
     Falha silenciosa -- se o Gemini falhar, retorna os itens sem modificacao.
@@ -426,6 +484,7 @@ def audit_purchase_map(normalized_items: list, original_texts: dict = None) -> l
         simplified = {
             "id":         item.get("id"),
             "item":       item.get("item"),
+            "marca":      item.get("marca"),
             "quantidade": item.get("quantidade"),
             "unidade":    item.get("unidade"),
             "fornecedores": {
@@ -462,13 +521,19 @@ def audit_purchase_map(normalized_items: list, original_texts: dict = None) -> l
             )
         )
 
-        # Chama Gemini (texto puro -- sem imagem aqui)
-        raw = _call_vision_with_retry([prompt_text])
+        # Monta parts — se temos imagens originais, inclui para auditoria visual
+        parts = [prompt_text]
+        if original_images and isinstance(original_images, dict):
+            for supplier_name, img_list in original_images.items():
+                if isinstance(img_list, list):
+                    for img_b64 in img_list[:3]:  # máx 3 páginas por fornecedor
+                        parts.append({"mime_type": "image/png", "data": img_b64})
+
+        raw = _call_vision_with_retry(parts)
 
         # Parse -- espera objeto com chave "items"
         parsed = _parse_json_object(raw)
         if not parsed:
-            # Tenta como array direto
             arr = _parse_json_response(raw)
             parsed = {"items": arr} if arr else {}
 
@@ -511,4 +576,3 @@ def audit_purchase_map(normalized_items: list, original_texts: dict = None) -> l
     except Exception as e:
         logger.error("[Gemini/Auditoria] Erro (nao bloqueante): %s", e)
         return normalized_items
-
