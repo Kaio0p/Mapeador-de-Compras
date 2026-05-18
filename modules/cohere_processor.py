@@ -1,31 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-cohere_processor.py — Agente Lógico/Normalizador via Cohere command-r-plus
+cohere_processor.py — Agente Lógico/Normalizador via Cohere command-a-reasoning
 ===========================================================================
 Responsável pela NORMALIZAÇÃO e CRUZAMENTO dos orçamentos extraídos.
 
-Vantagens do Cohere command-r-plus para normalização:
-  • Especializado em RAG e tarefas estruturadas (JSON)
-  • Suporte nativo a JSON mode (response_format)
-  • Generous rate limits no free tier vs. Groq
-  • Excelente raciocínio lógico e matemático para Regra de Proporção
-
-Roteamento do sistema:
-  Extração PDF nativo    → gemini_processor.extract_items_from_text()
-  Extração PDF escaneado → gemini_processor.extract_items_from_images()
-  Normalização           → cohere_processor.normalize_and_match()   ← ESTE MÓDULO
-  Auditoria Final        → gemini_processor.audit_purchase_map()
+Pipeline:
+  1. Recebe itens brutos extraídos pelo Gemini (por fornecedor)
+  2. Agrupa itens equivalentes entre fornecedores (fuzzy matching semântico)
+  3. Padroniza nomes, unidades e quantidades
+  4. Aplica Regra de Proporção quando embalagens diferem
+  5. Valida contra catálogo Supabase (se disponível)
 
 Anti-Rate-Limit:
   • Retry exponencial com jitter aleatório
   • Detecção de HTTP 429 e extração de retry_after
   • Backoff com cap de 120s
-
-Anti-Alucinação (camadas locais):
-  • JSON mode nativo via cohere (response_format)
-  • Validação Pydantic pós-parse
-  • Sanity check de preços e unidades
-  • Guardrail de plausibilidade (retry automático se < 30% dos itens)
 """
 import json
 import re
@@ -45,10 +34,6 @@ logger = logging.getLogger(__name__)
 
 ALLOWED_UNITS = ["UN", "CX", "PCT", "BB", "KG"]
 
-# Modelo Cohere para normalização
-# command-r-plus foi removido em setembro/2025.
-# command-a-reasoning-08-2025: modelo de raciocínio da Cohere, ideal para
-# lógica matemática (regra de 3, proporções) e estruturação JSON complexa.
 _COHERE_MODEL = "command-a-reasoning-08-2025"
 
 _PRICE_HIGH_THRESHOLD = 1_000.0
@@ -131,7 +116,7 @@ def _normalize_unit(unit: str) -> str:
         "CX": "CX", "CAIXA": "CX",
         "PCT": "PCT", "PACOTE": "PCT", "PC": "PCT", "PAC": "PCT",
         "FD": "PCT", "FARDO": "PCT", "RESMA": "PCT", "RSM": "PCT",
-        "BB": "BB", "BOMBONA": "BB", "BALDE": "BB", "BD": "BB",
+        "BB": "BB", "BOMBONA": "BB", "BD": "BB",
         "GL": "BB", "GALÃO": "BB", "GALAO": "BB",
         "KG": "KG", "KILO": "KG", "QUILO": "KG",
         "L": "UN", "LT": "UN", "LITRO": "UN",
@@ -161,7 +146,6 @@ def _parse_json_response(text: str) -> list:
     if m:
         try:
             obj = json.loads(m.group())
-            # Pode vir embrulhado em {"items": [...]}
             if isinstance(obj, dict):
                 items = obj.get("items", obj.get("data", obj.get("result", None)))
                 if isinstance(items, list):
@@ -241,6 +225,9 @@ def _fuzzy_match_catalog(item_name: str, catalog: list) -> tuple:
         if not nome:
             continue
         score = SequenceMatcher(None, item_upper, nome).ratio()
+        # Bonus: se o nome do item contém o nome do catálogo ou vice-versa
+        if nome in item_upper or item_upper in nome:
+            score = max(score, 0.85)
         if score > best_score:
             best_score = score
             best_name  = entry.get("nome_oficial")
@@ -249,23 +236,39 @@ def _fuzzy_match_catalog(item_name: str, catalog: list) -> tuple:
 
 
 def _apply_catalog_matching(items: list, catalog: list) -> list:
-    """Aplica fuzzy matching contra catálogo e sinaliza itens sem match."""
-    FUZZY_THRESHOLD = 0.82
+    """
+    Aplica fuzzy matching contra catálogo Supabase.
+    
+    Se o match for alto (>= THRESHOLD), usa o nome e a unidade do catálogo.
+    Isso garante consistência com o padrão definido pelo usuário no Supabase.
+    """
+    FUZZY_THRESHOLD = 0.75  # Mais tolerante para pegar variações
+    RENAME_THRESHOLD = 0.85  # Só renomeia com alta confiança
+    
     for item in items:
         nome = item.get("item", "")
         best_name, score, best_unit = _fuzzy_match_catalog(nome, catalog)
         item["catalog_match"] = best_name
         item["catalog_score"] = round(score, 3)
-        if score >= FUZZY_THRESHOLD:
+        
+        if score >= RENAME_THRESHOLD and best_name:
+            # Alta confiança: adota nome e unidade do catálogo
+            item["item"] = best_name.upper()
             if best_unit and best_unit.upper() in ALLOWED_UNITS:
                 item["unidade"] = best_unit.upper()
-        else:
-            item["is_suspect"] = True
+        elif score >= FUZZY_THRESHOLD and best_unit:
+            # Confiança média: adota apenas a unidade do catálogo
+            if best_unit.upper() in ALLOWED_UNITS:
+                item["unidade"] = best_unit.upper()
+        elif score < FUZZY_THRESHOLD:
+            # Sem match: sinaliza para revisão (não-bloqueante)
             reasons = list(item.get("alert_reason") or [])
             reasons.append(
                 "Item não encontrado no catálogo (melhor: '{}', {:.0%})".format(best_name, score)
             )
             item["alert_reason"] = reasons
+            # NÃO marca como suspect apenas por não estar no catálogo
+            # (muitos itens legítimos podem não estar cadastrados ainda)
     return items
 
 
@@ -277,7 +280,7 @@ def _call_cohere_with_retry(
     max_attempts: int = 5,
     base_delay: float = 8.0,
     temperature: float = 0.1,
-    max_tokens: int = 8192,   # aumentado de 4096 para evitar truncamento silencioso
+    max_tokens: int = 12000,
 ) -> str:
     """
     Chama o Cohere via ClientV2 com retry exponencial + jitter.
@@ -287,14 +290,11 @@ def _call_cohere_with_retry(
       - messages = [{"role": "system", "content": preamble}, {"role": "user", "content": message}]
       - Resposta em response.message.content[0].text
       - response_format={"type": "json_object"} força JSON puro
-
-    Detecta HTTP 429 e extrai retry_after quando disponível.
     """
     client  = get_cohere_client()
     delay   = base_delay
     attempt = 0
 
-    # Monta a lista de mensagens no formato V2
     messages = []
     if preamble:
         messages.append({"role": "system", "content": preamble})
@@ -309,11 +309,6 @@ def _call_cohere_with_retry(
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
-            # V2: response.message.content é uma lista de blocos de conteúdo.
-            # Modelos de raciocínio (command-a-reasoning-*) retornam dois tipos:
-            #   - ThinkingAssistantMessageResponseContentItem  → raciocínio interno (sem .text)
-            #   - TextAssistantMessageResponseContentItem      → resposta final    (tem .text)
-            # Filtramos pelo bloco que tem o atributo "text".
             content = response.message.content
             if isinstance(content, list):
                 for block in content:
@@ -321,7 +316,6 @@ def _call_cohere_with_retry(
                         text = block.text.strip()
                         logger.debug("[Cohere] Resposta bruta (primeiros 300 chars): %s", text[:300])
                         return text
-            # Fallback para string direta (modelos não-reasoning)
             if isinstance(content, str) and content:
                 logger.debug("[Cohere] Resposta bruta (string direta, primeiros 300 chars): %s", content[:300])
                 return content
@@ -332,7 +326,6 @@ def _call_cohere_with_retry(
             err_str = str(e).lower()
             attempt += 1
 
-            # Rate limit
             if "429" in str(e) or "rate" in err_str and "limit" in err_str:
                 retry_after = None
                 m = re.search(r'retry.after[\":\s]+(\d+)', str(e), re.IGNORECASE)
@@ -352,7 +345,6 @@ def _call_cohere_with_retry(
                 delay = min(delay * 2.0, 120.0)
                 continue
 
-            # Serviço indisponível
             if any(x in err_str for x in ["503", "502", "timeout", "unavailable", "connection"]):
                 wait = delay + random.uniform(0, 4)
                 logger.warning(
@@ -365,7 +357,6 @@ def _call_cohere_with_retry(
                 delay = min(delay * 2.0, 60.0)
                 continue
 
-            # Modelo não encontrado / inválido
             if "model" in err_str and (
                 "not found" in err_str or "invalid" in err_str or "removed" in err_str
             ):
@@ -387,75 +378,104 @@ Você é um especialista sênior em mapas de compras empresariais brasileiros.
 Sua tarefa é cruzar orçamentos de múltiplos fornecedores e criar um mapa unificado em JSON.
 
 REGRAS ABSOLUTAS:
-1. Agrupe itens equivalentes mesmo com nomes diferentes
-   Exemplos: "HIPOCLORITO 5% 5L" = "CLORO ATIVO 5L"; "PAPEL A4 RESMA" = "PAPEL A4 C/500FLS"
-2. Use nomes CURTOS e PADRONIZADOS em MAIÚSCULAS (sem detalhes desnecessários)
-3. Unidades SOMENTE: UN, CX, PCT, BB, KG
-   Resma→PCT | Fardo→PCT | Pacote c/N→PCT | Bombona/Balde/Galão→BB | Galão→BB
-4. Preço POR EMBALAGEM DE VENDA como declarado pelo fornecedor
 
-5. REGRA DE EQUIVALÊNCIA CONTEXTUAL (REGRA DE 3):
-   Observe o cenário de cada item cotado. Se fornecedores diferentes cotaram variações de
-   peso/tamanho para a mesma necessidade (exemplo: dois fornecedores cotaram "Elástico 1KG"
-   e um fornecedor cotou 2x "Elástico 500g"), NÃO separe em itens diferentes.
-   Sua tarefa é identificar a INTENÇÃO DA COMPRA e agrupar todos na mesma linha:
+1. AGRUPAMENTO: Agrupe itens equivalentes mesmo com nomes diferentes entre fornecedores.
+   Exemplos de equivalência:
+   - "CAIXA ARQUIVO MORTO" = "CX ARQUIVO" = "ARQUIVO MORTO"
+   - "PILHA ALCALINA AA C/4" = "PILHA AA PEQUENA C/4" = "PILHA DURACELL AA"
+   - "BORRACHA PEQUENA" = "BORRACHA BRANCA" (se contexto indicar)
+   - "BALDE 8L" do fornecedor A = "BALDE PLÁSTICO 8L" do fornecedor B
 
+2. NOMES DESCRITIVOS: Use nomes COMPLETOS e PADRONIZADOS em MAIÚSCULAS
+   - INCLUA características relevantes: tipo, tamanho, capacidade, cor
+   - Exemplos bons: "CAIXA DE ARQUIVO MORTO", "BORRACHA PEQUENA", "COPO 200ML PP",
+     "PILHA ALCALINA AA PEQUENA C/4", "BALDE PLASTICO 8L VERDE", "ESTILETE LARGO"
+   - Exemplos ruins: "CAIXA", "BORRACHA", "COPO", "PILHA", "BALDE"
+
+3. UNIDADES — SOMENTE: UN, CX, PCT, BB, KG
+   - Resma de papel → PCT
+   - Fardo → PCT
+   - Pacote c/N unidades (pilha c/4, copo c/100) → PCT
+   - Bombona/Galão de LÍQUIDO → BB (ex: hipoclorito 5L em bombona)
+   - BALDE como PRODUTO (balde plástico para uso) → UN (NÃO é BB!)
+   - Item individual → UN
+
+4. PREÇO POR EMBALAGEM DE VENDA como declarado pelo fornecedor
+   - NUNCA divida o preço pelo conteúdo da embalagem
+   - Pilha c/4 a R$18,64 → preco_unit = 18.64 (NÃO 4.66!)
+   - Copo c/100 a R$5,37 → preco_unit = 5.37
+
+5. PILHAS — REGRA ESPECIAL:
+   - Pilhas são vendidas em PACOTES (c/2, c/4, etc.)
+   - Unidade OBRIGATÓRIA: PCT
+   - Preço: valor do PACOTE inteiro (não dividir por quantidade de pilhas)
+   - Nome deve incluir: tipo (AA/AAA), tamanho (PEQUENA/PALITO), e "C/4" ou "C/2"
+   - AA = PEQUENA, AAA = PALITO
+   - Se o orçamento diz "3 cartelas de pilha AA", quantidade = 3, unidade = PCT
+
+6. BALDES — REGRA ESPECIAL:
+   - Balde PLÁSTICO como PRODUTO de limpeza → unidade = UN (é um item individual!)
+   - Balde/Bombona como EMBALAGEM de líquido (ex: tinta, químico) → unidade = BB
+   - "BALDE 8L" para uso → UN | "BALDE DE HIPOCLORITO 5L" → BB
+
+7. REGRA DE EQUIVALÊNCIA CONTEXTUAL (REGRA DE 3):
+   Se fornecedores cotaram variações de peso/tamanho para a mesma necessidade:
+   
    PASSO 1 — Eleja a UNIDADE PADRÃO:
-     • Se o item constar na Lista de Referência, use OBRIGATORIAMENTE a unidade/tamanho
-       que está na lista de referência como padrão.
-     • Se o item NÃO estiver na lista de referência, eleja a unidade mais comum
-       (majoritária) entre os fornecedores como padrão.
+     • Se o item constar na Lista de Referência ou Catálogo, use a unidade/tamanho de lá.
+     • Senão, use a unidade mais comum entre os fornecedores.
+   
+   PASSO 2 — Normalize o preço do fornecedor divergente via REGRA DE 3.
+   
+   PASSO 3 — Registre o ajuste no campo "observacao".
 
-   PASSO 2 — Normalize o preço do fornecedor divergente via REGRA DE 3:
-     • Exemplo: padrão eleito = 1KG. Fornecedor A cotou 500g a R$8,00.
-       Preço normalizado = (R$8,00 / 500g) × 1000g = R$16,00 por KG.
-     • Exemplo: padrão eleito = 500g. Fornecedor B cotou 1KG a R$15,00.
-       Preço normalizado = (R$15,00 / 1000g) × 500g = R$7,50 por 500g.
-     • Use sempre proporção direta: preco_normalizado = preco_original × (qtd_padrao / qtd_original)
+8. Fornecedores que NÃO cotaram o item → preco_unit: null
+   ATENÇÃO: Se um fornecedor TEM o item no orçamento, DEVE ter preço no mapa!
+   Não descarte dados de nenhum fornecedor.
 
-   PASSO 3 — Registre o ajuste no campo "observacao" do item:
-     • Indique qual fornecedor foi ajustado e a conversão aplicada.
-     • Exemplo: "Fornecedor X: 2×500g→1KG (R$16,00 calc. via regra de 3)"
+9. MARCAS: Preserve as marcas extraídas. Se vários fornecedores indicam a mesma marca,
+   use-a. Se diferem, use a mais comum ou a do fornecedor de referência.
 
-   ATENÇÃO: Esta regra só se aplica quando há INTENÇÃO CLARA de comprar o mesmo produto
-   em volumes/pesos diferentes. Produtos genuinamente distintos (ex: detergente 5L e
-   detergente 500ml com fins diferentes) devem permanecer em linhas separadas.
-
-6. Fornecedores que não cotaram o item → preco_unit: null
-7. Retorne SEMPRE um objeto JSON válido com a chave "items"
+10. Retorne SEMPRE um objeto JSON válido com a chave "items"
 """
 
 _NORMALIZATION_MESSAGE_TEMPLATE = """\
-Crie o mapa de compras unificado abaixo.
+Crie o mapa de compras unificado cruzando os orçamentos dos fornecedores abaixo.
 
-FORNECEDORES ({n_fornecedores}):
+FORNECEDORES ({n_fornecedores}): {nomes_fornecedores}
+
 {dados_fornecedores}
 
-LISTA DE REFERÊNCIA (itens que precisamos comprar):
+LISTA DE REFERÊNCIA (itens que precisamos comprar — use como guia de nomes e quantidades):
 {lista_referencia}
+
+{catalogo_context}
 
 {preferences}
 
 Retorne um objeto JSON com a chave "items" onde cada elemento tem EXATAMENTE esta estrutura:
 {{
   "id": inteiro começando em 1,
-  "item": "NOME CURTO MAIÚSCULO",
+  "item": "NOME DESCRITIVO COMPLETO MAIÚSCULO",
   "marca": "marca ou null",
-  "quantidade": número float,
+  "quantidade": número float (quantidade de embalagens),
   "unidade": "UN ou CX ou PCT ou BB ou KG",
   "fornecedores": {{
-    "NOME_EXATO_DO_FORNECEDOR": {{"preco_unit": número_ou_null, "obs": null}}
+    "{exemplo_forn}": {{"preco_unit": número_ou_null, "obs": null}},
+    ...para CADA fornecedor...
   }},
   "observacao": "nota sobre ajuste de proporção ou null"
 }}
 
-DADOS DOS FORNECEDORES (use estes nomes EXATAMENTE como chaves em "fornecedores"):
-{dados_chave_numerica}
-
 IMPORTANTE:
+- Use os nomes EXATOS dos fornecedores como chaves em "fornecedores": {nomes_fornecedores}
+- TODOS os fornecedores devem aparecer em CADA item (com null se não cotaram)
 - Todos os números devem ser float, NUNCA strings
 - Retorne APENAS o JSON, sem markdown, sem explicações fora do JSON
+- NÃO divida preços de pacotes (pilha c/4 = preço do pacote inteiro)
+- BALDE como produto = UN, NUNCA BB
 - Aplique a REGRA DE PROPORÇÃO sempre que as embalagens diferirem entre fornecedores
+- INCLUA TODOS os itens de TODOS os fornecedores — não pule dados do JAE ou qualquer outro
 """
 
 
@@ -468,47 +488,47 @@ def normalize_and_match(
     catalog: list = None,
 ) -> list:
     """
-    Normaliza e cruza itens de múltiplos fornecedores via Cohere command-r-plus.
+    Normaliza e cruza itens de múltiplos fornecedores via Cohere.
 
     Pipeline:
-      1. Serializa dados de todos os fornecedores
-      2. Cohere cria mapa unificado aplicando Regra de Proporção
-      3. Remap fornecedor_1..N → nomes reais
-      4. Validação Pydantic + sanity check
-      5. Fuzzy match contra catálogo Supabase (se fornecido)
-      6. Guardrail de plausibilidade (retry automático se < 30% dos itens)
+      1. Serializa dados de todos os fornecedores (com nomes reais)
+      2. Cohere cria mapa unificado aplicando todas as regras
+      3. Validação Pydantic + sanity check
+      4. Fuzzy match contra catálogo Supabase (se fornecido)
+      5. Guardrail de plausibilidade (retry automático se < 30% dos itens)
 
     Parâmetros:
       supplier_items      — dict {nome_fornecedor: [lista_de_itens]}
       reference_list      — lista de referência [{item, quantidade, unidade}] (opcional)
       preferences_context — contexto de correções aprendidas
       catalog             — catálogo oficial do Supabase para fuzzy matching
-
-    Retorna lista de itens normalizados com campos padrão + is_suspect/alert_reason.
     """
     suppliers         = list(supplier_items.keys())
     total_input_items = sum(len(v) for v in supplier_items.values())
 
-    # Serializa dados com índice numérico (mais robusto para o modelo)
-    dados_numerados = "\n\n".join(
-        "FORNECEDOR {} — {}:\n{}".format(
-            i + 1, name, json.dumps(items, ensure_ascii=False, indent=2)
-        )
-        for i, (name, items) in enumerate(supplier_items.items())
-    )
+    # Serializa dados com nomes reais dos fornecedores (mais claro para o modelo)
+    dados_formatados = ""
+    for name, items in supplier_items.items():
+        dados_formatados += "\n=== ORÇAMENTO DO FORNECEDOR: {} ===\n".format(name)
+        dados_formatados += "Total de itens extraídos: {}\n".format(len(items))
+        dados_formatados += json.dumps(items, ensure_ascii=False, indent=2)
+        dados_formatados += "\n"
 
-    # Versão com chaves numéricas para o modelo usar no JSON de saída
-    dados_chave_numerica = json.dumps(
-        {
-            "fornecedor_{}".format(i + 1): {
-                "nome_real": name,
-                "itens": items,
-            }
-            for i, (name, items) in enumerate(supplier_items.items())
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
+    # Monta contexto do catálogo
+    catalogo_context = ""
+    if catalog:
+        catalog_entries = [
+            "  - {} ({})".format(entry.get("nome_oficial", ""), entry.get("unidade_padrao", "UN"))
+            for entry in catalog[:60]
+            if entry.get("nome_oficial")
+        ]
+        if catalog_entries:
+            catalogo_context = (
+                "CATÁLOGO DE PRODUTOS (referência de nomes e unidades — use como guia):\n"
+                + "\n".join(catalog_entries)
+                + "\n\nSe um item extraído corresponder a um item do catálogo, "
+                "use o NOME e a UNIDADE do catálogo como padrão.\n"
+            )
 
     ref_str = (
         json.dumps(reference_list, ensure_ascii=False, indent=2)
@@ -518,38 +538,107 @@ def normalize_and_match(
 
     message = _NORMALIZATION_MESSAGE_TEMPLATE.format(
         n_fornecedores=len(suppliers),
-        dados_fornecedores=dados_numerados,
+        nomes_fornecedores=json.dumps(suppliers, ensure_ascii=False),
+        dados_fornecedores=dados_formatados,
         lista_referencia=ref_str,
+        catalogo_context=catalogo_context,
         preferences=(
             "PREFERÊNCIAS DO USUÁRIO (aplique obrigatoriamente):\n" + preferences_context
             if preferences_context
             else ""
         ),
-        dados_chave_numerica=dados_chave_numerica,
+        exemplo_forn=suppliers[0] if suppliers else "FORNECEDOR",
     )
 
     raw = _call_cohere_with_retry(
         message=message,
         preamble=_NORMALIZATION_PREAMBLE,
         temperature=0.05,
-        max_tokens=8192,
+        max_tokens=12000,
     )
 
-    # Parse — Cohere pode retornar {"items": [...]} ou o array direto
-    # ou ainda wrappers alternativos como {"result": [...]} / {"mapa": [...]}
+    # Parse — Cohere pode retornar {"items": [...]} ou wrappers alternativos
+    items = _parse_response_to_items(raw)
+
+    if not items:
+        logger.error(
+            "[Cohere/Normalização] Parse retornou lista vazia. "
+            "Raw (primeiros 500 chars): %s", raw[:500] if raw else "<vazio>"
+        )
+
+    # ── Guardrail de plausibilidade ───────────────────────────────────────────
+    # Se temos poucos itens em relação ao esperado, tenta novamente
+    min_expected = max(1, int(total_input_items * 0.25))
+    if len(items) < min_expected:
+        logger.warning(
+            "[Cohere/Normalização] Resultado suspeito: %d itens vs %d de entrada (mín. esperado %d). Retentar...",
+            len(items), total_input_items, min_expected,
+        )
+        raw2 = _call_cohere_with_retry(
+            message=message,
+            preamble=_NORMALIZATION_PREAMBLE,
+            temperature=0.05,
+            max_tokens=12000,
+        )
+        items2 = _parse_response_to_items(raw2)
+        if isinstance(items2, list) and len(items2) > len(items):
+            logger.info("[Cohere/Normalização] Retry retornou %d itens (anterior: %d)", len(items2), len(items))
+            items = items2
+        else:
+            logger.warning("[Cohere/Normalização] Retry também retornou poucos itens: %d", len(items2) if items2 else 0)
+
+    # ── Garante que todos os fornecedores existam em todos os itens ──────────
+    for item in items:
+        forn = item.get("fornecedores") or {}
+        for sname in suppliers:
+            if sname not in forn:
+                forn[sname] = {"preco_unit": None, "obs": None}
+        item["fornecedores"] = forn
+
+    # ── Remap fornecedor_1..N → nomes reais (caso o modelo use índices) ──────
+    key_map = {"fornecedor_{}".format(i + 1): name for i, name in enumerate(suppliers)}
+    # Também mapeia variações comuns
+    for i, name in enumerate(suppliers):
+        key_map["fornecedor {}".format(i + 1)] = name
+        key_map["forn_{}".format(i + 1)] = name
+        key_map["forn{}".format(i + 1)] = name
+        key_map[name.lower()] = name
+        key_map[name.upper()] = name
+
+    for item in items:
+        if "fornecedores" in item and isinstance(item["fornecedores"], dict):
+            remapped = {}
+            for k, v in item["fornecedores"].items():
+                real_key = key_map.get(k, key_map.get(k.lower(), k))
+                remapped[real_key] = v
+            item["fornecedores"] = remapped
+
+    # Validação Pydantic
+    items = _validate_normalized_items(items)
+    # Sanity check
+    items = _sanity_check_normalized(items)
+    # Fuzzy catalog matching (aplica nomes/unidades do catálogo)
+    if catalog:
+        items = _apply_catalog_matching(items, catalog)
+
+    return items
+
+
+def _parse_response_to_items(raw: str) -> list:
+    """Parse robusto da resposta do Cohere para lista de itens."""
+    if not raw:
+        return []
     items = []
     try:
         data = json.loads(raw)
         if isinstance(data, list):
             items = data
         elif isinstance(data, dict):
-            # Tenta chaves conhecidas em ordem de prioridade
             for key in ("items", "data", "result", "mapa", "compras", "output"):
                 candidate = data.get(key)
                 if isinstance(candidate, list) and candidate:
                     items = candidate
                     break
-            # Último recurso: primeiro valor que for lista
             if not items:
                 for v in data.values():
                     if isinstance(v, list) and v:
@@ -560,78 +649,4 @@ def normalize_and_match(
 
     if not isinstance(items, list):
         items = []
-
-    if not items:
-        logger.error(
-            "[Cohere/Normalização] Parse retornou lista vazia. "
-            "Raw (primeiros 500 chars): %s", raw[:500] if raw else "<vazio>"
-        )
-
-    # ── Guardrail de plausibilidade ───────────────────────────────────────────
-    min_expected = max(1, int(total_input_items * 0.30))
-    if len(items) < min_expected:
-        logger.warning(
-            "[Cohere/Normalização] Resultado suspeito: %d itens vs %d de entrada (mín. esperado %d). Retentar...",
-            len(items), total_input_items, min_expected,
-        )
-        raw2 = _call_cohere_with_retry(
-            message=message,
-            preamble=_NORMALIZATION_PREAMBLE,
-            temperature=0.05,
-            max_tokens=8192,
-        )
-        try:
-            items2 = []
-            if raw2:
-                data2 = json.loads(raw2)
-                if isinstance(data2, list):
-                    items2 = data2
-                elif isinstance(data2, dict):
-                    for key in ("items", "data", "result", "mapa", "compras", "output"):
-                        candidate = data2.get(key)
-                        if isinstance(candidate, list) and candidate:
-                            items2 = candidate
-                            break
-                    if not items2:
-                        for v in data2.values():
-                            if isinstance(v, list) and v:
-                                items2 = v
-                                break
-            if not items2:
-                items2 = _parse_json_response(raw2)
-            if isinstance(items2, list) and len(items2) > len(items):
-                logger.info("[Cohere/Normalização] Retry retornou %d itens (anterior: %d)", len(items2), len(items))
-                items = items2
-            else:
-                logger.warning("[Cohere/Normalização] Retry também retornou poucos itens: %d", len(items2))
-        except Exception as exc:
-            logger.warning("[Cohere/Normalização] Erro no parse do retry: %s", exc)
-
-    # ── Remap fornecedor_1..N → nomes reais ──────────────────────────────────
-    # O modelo às vezes usa "fornecedor_1" como chave — remapeamos para o nome real
-    key_map = {"fornecedor_{}".format(i + 1): name for i, name in enumerate(suppliers)}
-    for item in items:
-        if "fornecedores" in item and isinstance(item["fornecedores"], dict):
-            remapped = {}
-            for k, v in item["fornecedores"].items():
-                real_key = key_map.get(k, k)
-                remapped[real_key] = v
-            item["fornecedores"] = remapped
-
-    # ── Garante que todos os fornecedores existam em todos os itens ──────────
-    for item in items:
-        forn = item.get("fornecedores") or {}
-        for sname in suppliers:
-            if sname not in forn:
-                forn[sname] = {"preco_unit": None, "obs": None}
-        item["fornecedores"] = forn
-
-    # Validação Pydantic
-    items = _validate_normalized_items(items)
-    # Sanity check
-    items = _sanity_check_normalized(items)
-    # Fuzzy catalog matching
-    if catalog:
-        items = _apply_catalog_matching(items, catalog)
-
     return items
