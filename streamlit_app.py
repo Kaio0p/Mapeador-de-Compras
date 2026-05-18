@@ -300,6 +300,7 @@ def init_state():
         "catalog": [],
         "approved_supplier": None,
         "original_texts": {},
+        "original_images": {},
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -629,9 +630,11 @@ elif step == 2:
         )
 
     if run_extraction:
-        supplier_items = {}
-        original_texts = {}   # textos originais para a auditoria do Gemini
-        prefs_ctx      = st.session_state.get("preferences_context", "")
+        supplier_items  = {}
+        original_texts  = {}   # textos originais para a auditoria do Gemini
+        original_images = {}   # imagens originais para auditoria visual
+        prefs_ctx       = st.session_state.get("preferences_context", "")
+        catalog         = st.session_state.get("catalog") or None
 
         with st.status("Analisando orçamentos…", expanded=True) as status_box:
 
@@ -655,13 +658,18 @@ elif step == 2:
                         b64 = base64.b64encode(pdf_bytes).decode("utf-8")
                         if mime == "image/jpeg":
                             items = extract_items_from_jpeg_images(
-                                [b64], preferences_context=prefs_ctx
+                                [b64],
+                                preferences_context=prefs_ctx,
+                                catalog=catalog,
                             )
                         else:
                             items = extract_items_from_images(
-                                [b64], preferences_context=prefs_ctx
+                                [b64],
+                                preferences_context=prefs_ctx,
+                                catalog=catalog,
                             )
                         original_texts[supplier_name] = "[Imagem — OCR via Gemini Vision]"
+                        original_images[supplier_name] = [b64]
 
                     else:
                         # PDF — detecta se é nativo ou escaneado
@@ -677,9 +685,12 @@ elif step == 2:
                             )
                             images = extract_images_from_pdf(pdf_bytes)
                             items  = extract_items_from_images(
-                                images, preferences_context=prefs_ctx
+                                images,
+                                preferences_context=prefs_ctx,
+                                catalog=catalog,
                             )
                             original_texts[supplier_name] = "[PDF escaneado — OCR via Gemini Vision]"
+                            original_images[supplier_name] = images[:3]  # guarda para auditoria
                         else:
                             # PDF nativo com texto → Gemini extrai direto do texto
                             st.write(
@@ -692,6 +703,7 @@ elif step == 2:
                                 [],
                                 preferences_context=prefs_ctx,
                                 text_fallback=text,
+                                catalog=catalog,
                             )
                             original_texts[supplier_name] = text
 
@@ -763,15 +775,19 @@ elif step == 2:
                 st.stop()
 
             # ─────────────────────────────────────────────────────────────────
-            # ETAPA 3 — Auditoria Final via Gemini (cross-reference)
+            # ETAPA 3 — Auditoria Final via Gemini (cross-reference visual)
             # ─────────────────────────────────────────────────────────────────
             st.write(
-                "🔍 {} Auditando mapa — cruzando com textos originais dos orçamentos…".format(
+                "🔍 {} Auditando mapa — cruzando com imagens originais dos orçamentos…".format(
                     _agent_badge("audit")
                 )
             )
             try:
-                normalized = audit_purchase_map(normalized, original_texts=original_texts)
+                normalized = audit_purchase_map(
+                    normalized,
+                    original_texts=original_texts,
+                    original_images=original_images,
+                )
             except Exception as e_audit:
                 # Auditoria é não-bloqueante: avisa mas continua com os itens normalizados
                 st.warning(
