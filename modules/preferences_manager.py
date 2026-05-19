@@ -370,7 +370,13 @@ def _derive_rules(nomenclature: list, unit_conv: list, brand_corr: list = None) 
     # ── Regras fixas — sempre incluídas (mais relevantes e detalhadas) ─────────
     rules.append(
         "PILHAS: unidade=PCT, preço do PACOTE inteiro (não dividir por 4 nem por 2). "
-        "Nome inclui 'C/4' ou 'C/2'. AA=PEQUENA, AAA=PALITO."
+        "Nome inclui 'C/4' ou 'C/2'. AA=PEQUENA, AAA=PALITO. "
+        "Normalização C/2→C/4: multiplica o preço por 2 (correto e esperado)."
+    )
+    rules.append(
+        "QUANTIDADE DE PILHAS: representa a necessidade da empresa — usar a do aprovado "
+        "ou da maioria. NUNCA somar quantidades de fornecedores diferentes. "
+        "Exemplo: SMAIS=3 C/4, MINAS=6 C/2, JAE=6 C/2 → todos equivalem a 3 C/4 → quantidade=3."
     )
     rules.append(
         "PAPEL A4: preço por RESMA individual. "
@@ -392,11 +398,16 @@ def _derive_rules(nomenclature: list, unit_conv: list, brand_corr: list = None) 
     rules.append(
         "NOMES DESCRITIVOS: incluir tipo/tamanho/capacidade relevante. "
         "Ex: 'CAIXA DE ARQUIVO MORTO' (não só 'CAIXA'), "
-        "'PILHA ALCALINA AA PEQUENA C/4' (não só 'PILHA')."
+        "'PILHA ALCALINA AA PEQUENA C/4' (não só 'PILHA'). "
+        "Usar nome EXATO do catálogo Supabase quando disponível."
     )
     rules.append(
         "TODOS os fornecedores que cotaram o item DEVEM ter preco_unit preenchido — "
         "NUNCA null para fornecedor que claramente cotou."
+    )
+    rules.append(
+        "AUDITORIA: normalização proporcional de embalagens (C/2→C/4×2) é CORRETA e não "
+        "deve ser sinalizada como erro. Sinalizar apenas preços/itens genuinamente errados."
     )
 
     return rules
