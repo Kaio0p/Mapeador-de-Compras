@@ -215,28 +215,51 @@ def _sanity_check_normalized(items: list) -> list:
 def _fuzzy_match_catalog(item_name: str, catalog: list) -> tuple:
     """
     Fuzzy match contra catálogo. Retorna (nome, score, unidade, marca).
+
+    Lógica de pontuação (da maior para menor prioridade):
+      1. Igualdade exata → 1.0
+      2. Item é prefixo/substring do nome do catálogo (ex: "PAPEL A4" ⊂ "PAPEL A4 C/500FLS") → 0.95
+      3. Nome do catálogo é substring do item (ex: "CAIXA ARQUIVO MORTO" ⊃ "ARQUIVO MORTO") → 0.90
+      4. SequenceMatcher ratio normal
     """
     if not catalog or not item_name:
         return None, 0.0, None, None
+
     best_name  = None
     best_score = 0.0
     best_unit  = None
     best_marca = None
-    item_upper = item_name.upper()
+    item_upper = item_name.strip().upper()
+
     for entry in catalog:
-        nome  = (entry.get("nome_oficial") or "").upper()
+        nome = (entry.get("nome_oficial") or "").strip().upper()
         if not nome:
             continue
-        score = SequenceMatcher(None, item_upper, nome).ratio()
-        # Bonus: se o nome do item contém o nome do catálogo ou vice-versa
-        if nome in item_upper or item_upper in nome:
-            score = max(score, 0.85)
+
+        # 1. Igualdade exata
+        if item_upper == nome:
+            score = 1.0
+        # 2. Item é prefixo/substring do nome do catálogo
+        #    Ex: "PAPEL A4" → "PAPEL A4 C/500FLS"  (item está contido no catálogo)
+        elif item_upper in nome:
+            # Quanto maior a cobertura, maior a confiança
+            coverage = len(item_upper) / len(nome)
+            score = max(0.90 + 0.05 * coverage, SequenceMatcher(None, item_upper, nome).ratio())
+        # 3. Nome do catálogo é substring do item
+        #    Ex: "CAIXA DE ARQUIVO MORTO PAPELÃO" ⊃ "CAIXA DE ARQUIVO MORTO"
+        elif nome in item_upper:
+            coverage = len(nome) / len(item_upper)
+            score = max(0.85 + 0.05 * coverage, SequenceMatcher(None, item_upper, nome).ratio())
+        # 4. Similaridade sequencial
+        else:
+            score = SequenceMatcher(None, item_upper, nome).ratio()
+
         if score > best_score:
             best_score = score
             best_name  = entry.get("nome_oficial")
             best_unit  = entry.get("unidade_padrao")
-            # Suporta campos marca_referencia ou marca
             best_marca = entry.get("marca_referencia") or entry.get("marca") or None
+
     return best_name, best_score, best_unit, best_marca
 
 
@@ -244,16 +267,15 @@ def _apply_catalog_matching(items: list, catalog: list) -> list:
     """
     Aplica fuzzy matching contra catálogo Supabase.
 
-    Se o match for alto (>= RENAME_THRESHOLD):
-      - Adota nome e unidade do catálogo
-      - Adota marca do catálogo SE o item ainda não tem marca definida
-    Se o match for médio (>= FUZZY_THRESHOLD):
-      - Adota apenas a unidade do catálogo
-    Score baixo:
-      - Sinaliza para revisão (não-bloqueante, não marca como suspect)
+    Thresholds:
+      RENAME_THRESHOLD (0.82): adota nome, unidade e (marca se vazia) do catálogo
+      FUZZY_THRESHOLD  (0.70): adota apenas a unidade do catálogo
+
+    A lógica de substring garante que "PAPEL A4" → "PAPEL A4 C/500FLS" com score ≥ 0.92,
+    muito acima do RENAME_THRESHOLD.
     """
-    FUZZY_THRESHOLD  = 0.72   # adota unidade do catálogo
-    RENAME_THRESHOLD = 0.85   # adota nome + unidade + (marca se vazia)
+    FUZZY_THRESHOLD  = 0.70   # adota unidade do catálogo
+    RENAME_THRESHOLD = 0.82   # adota nome + unidade + (marca se vazia)
 
     for item in items:
         nome = item.get("item", "")
@@ -262,13 +284,17 @@ def _apply_catalog_matching(items: list, catalog: list) -> list:
         item["catalog_score"] = round(score, 3)
 
         if score >= RENAME_THRESHOLD and best_name:
-            # Alta confiança: adota nome e unidade do catálogo
+            # Alta confiança: adota nome oficial do catálogo
             item["item"] = best_name.upper()
             if best_unit and best_unit.upper() in ALLOWED_UNITS:
                 item["unidade"] = best_unit.upper()
-            # Adota marca do catálogo SOMENTE se o item ainda não tem marca
+            # Adota marca do catálogo SOMENTE se o item ainda não tem marca definida
             if best_marca and not item.get("marca"):
                 item["marca"] = best_marca
+            logger.debug(
+                "[Catálogo] '%s' → '%s' (score=%.3f)",
+                nome, best_name, score,
+            )
 
         elif score >= FUZZY_THRESHOLD and best_unit:
             # Confiança média: adota apenas a unidade do catálogo
@@ -445,12 +471,27 @@ REGRA #5 — PILHAS (REGRA ESPECIAL)
   - Preço: valor do PACOTE inteiro (NÃO dividir por número de pilhas)
   - Nome deve incluir: tipo (AA/AAA), tamanho (PEQUENA/PALITO), e "C/4" ou "C/2"
     • AA = PEQUENA, AAA = PALITO
-  - AGRUPAMENTO DE PILHAS: agrupe somente se o mesmo fornecedor cotou o mesmo tipo E tamanho (C/4 com C/4, C/2 com C/2)
-  - Se Fornecedor A cotou C/2 a R$11,11 e Fornecedor B cotou C/4 a R$18,64:
-    → São DOIS itens distintos? NÃO: unifique em C/4 aplicando proporção para o fornecedor que cotou C/2:
-      preco_unit do forn. A = R$11,11 × (4/2) = R$22,22 (normalizado para C/4)
-      Registre na observacao: "MINAS: normalizado de C/2 para C/4 (R$11,11 × 2 = R$22,22)"
-  - ATENÇÃO: se o 3º fornecedor cotou a pilha AA C/4, inclua o preço dele!
+
+  NORMALIZAÇÃO DE EMBALAGEM (C/2 ↔ C/4):
+  - Quando fornecedores cotaram tamanhos diferentes do MESMO tipo de pilha, unifique tudo
+    na embalagem PADRÃO (a da maioria dos fornecedores ou do orçamento aprovado).
+  - Exemplo: Forn A cotou C/2 a R$11,11 e Forn B cotou C/4 a R$18,64:
+    → Padrão = C/4 (maioria ou aprovado)
+    → preco_unit do Forn A = R$11,11 × (4/2) = R$22,22 (normalizado para C/4) ✓
+    → Registre na observacao: "MINAS: normalizado de C/2 para C/4 (R$11,11 × 2 = R$22,22)"
+  - ATENÇÃO: se o 3º fornecedor também cotou, inclua o preço dele normalizado!
+
+  QUANTIDADE DE PILHAS — REGRA CRÍTICA:
+  - A QUANTIDADE no mapa representa a NECESSIDADE DA EMPRESA, não a soma dos fornecedores.
+  - Use a quantidade do orçamento aprovado (se houver), ou a quantidade da maioria.
+  - NUNCA some as quantidades dos fornecedores entre si.
+  - Exemplo CORRETO:
+      SMAIS (aprovado) cotou 3 pacotes C/4 → quantidade no mapa = 3
+      MINAS cotou 6 pacotes C/2 (equivale a 3 C/4) → confirma 3
+      JAE cotou 6 pacotes C/2 (equivale a 3 C/4) → confirma 3
+      → quantidade final = 3 PCT C/4 ✓
+  - Exemplo ERRADO:
+      NÃO some: 3 + 3 + 2 = 8 PCT → ERRADO, isso não representa a necessidade real
 
 ════════════════════════════════════════════════════════════════
 REGRA #6 — BALDES (REGRA ESPECIAL)
@@ -536,6 +577,9 @@ CHECKLIST ANTES DE RETORNAR:
 7. ✓ Nomes incluem características relevantes (tamanho, capacidade, etc.)
 8. ✓ Marcas preservadas conforme catálogo ou orçamentos originais
 9. ✓ NÃO criar itens que não existem nos orçamentos
+10. ✓ QUANTIDADE = necessidade da empresa (da lista de referência, ou do aprovado, ou da maioria)
+    NÃO é a soma das quantidades de todos os fornecedores
+    Pilhas: se SMAIS cotou 3 C/4, MINAS cotou 6 C/2 e JAE cotou 6 C/2 → todos equivalem a 3 C/4 → quantidade = 3
 
 Nomes exatos dos fornecedores a usar como chaves: {nomes_fornecedores}
 """
