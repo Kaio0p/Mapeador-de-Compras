@@ -427,3 +427,4 @@ def load_preferences(json_bytes: bytes) -> dict:
 
 def preferences_to_json_bytes(prefs: dict) -> bytes:
     return json.dumps(prefs, ensure_ascii=False, indent=2).encode("utf-8")
+
