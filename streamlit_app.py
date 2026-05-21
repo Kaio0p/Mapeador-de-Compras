@@ -1104,34 +1104,107 @@ elif step == 3:
                 edited_df = pd.concat([edited_df, pd.DataFrame([new_row])], ignore_index=True)
                 st.success("'{}' adicionado.".format(new_name))
 
-        # Converter DataFrame → lista de itens
+        # ── Converter DataFrame → lista de itens ─────────────────────────────
+        def _is_nan(val) -> bool:
+            """Retorna True para None e float NaN — robusto para valores do data_editor."""
+            if val is None:
+                return True
+            try:
+                return pd.isna(val)
+            except (TypeError, ValueError):
+                return False
+
         def df_to_items(df, sup_names):
             result = []
             for _, row in df.iterrows():
-                if not row.get("Item"):
+                item_val = row.get("Item")
+                # Linhas deletadas no data_editor deixam Item como NaN ou vazio — pular
+                if _is_nan(item_val) or not str(item_val).strip():
                     continue
                 forn_dict = {}
                 for sname in sup_names:
                     price = row.get("R$ {}".format(sname))
                     forn_dict[sname] = {
-                        "preco_unit": float(price) if price and not pd.isna(price) else None,
+                        "preco_unit": float(price) if not _is_nan(price) and price else None,
                         "obs": None,
                     }
                 und = str(row.get("UND") or "UN").upper()
                 if und not in ALLOWED_UNITS:
                     und = "UN"
+                id_val = row.get("ID")
+                # ID pode ser NaN quando a linha foi adicionada manualmente sem ID
+                if _is_nan(id_val):
+                    id_val = len(result) + 1
                 result.append({
-                    "id":           int(row.get("ID") or len(result) + 1),
-                    "item":         str(row.get("Item", "")),
+                    "id":           int(float(id_val)),
+                    "item":         str(item_val).strip().upper(),
                     "marca":        row.get("Marca") or None,
-                    "quantidade":   float(row.get("Qtd") or 1),
+                    "quantidade":   float(row.get("Qtd") or 1) if not _is_nan(row.get("Qtd")) else 1.0,
                     "unidade":      und,
                     "fornecedores": forn_dict,
                     "observacao":   row.get("Observação") or None,
                 })
             return result
 
-        # Painel de correções capturadas
+        # ── Detecção de itens ausentes no fornecedor aprovado ─────────────────
+        approved = st.session_state.get("approved_supplier")
+        if approved and approved in active_suppliers:
+            current_items = df_to_items(edited_df, active_suppliers)
+            absent_from_approved = [
+                it for it in current_items
+                if not (it.get("fornecedores") or {}).get(approved, {}).get("preco_unit")
+                and any(
+                    (it.get("fornecedores") or {}).get(s, {}).get("preco_unit")
+                    for s in active_suppliers if s != approved
+                )
+            ]
+            if absent_from_approved:
+                with st.expander(
+                    "⚠️ {} item(s) sem preço em **{}** (orçamento aprovado) — clique para revisar".format(
+                        len(absent_from_approved), approved
+                    ),
+                    expanded=True,
+                ):
+                    st.markdown(
+                        '<div style="font-size:0.85rem;color:#B25000;margin-bottom:10px;">'
+                        'Os itens abaixo existem apenas em orçamentos <b>recusados</b>. '
+                        'Geralmente não precisam ser incluídos no mapa — você pode removê-los '
+                        'ou mantê-los caso sejam compras complementares.'
+                        '</div>',
+                        unsafe_allow_html=True,
+                    )
+                    absent_names = []
+                    for it in absent_from_approved:
+                        outros = ", ".join(
+                            "{}=R${:.2f}".format(s, it["fornecedores"][s]["preco_unit"])
+                            for s in active_suppliers
+                            if s != approved and it["fornecedores"].get(s, {}).get("preco_unit")
+                        )
+                        st.markdown(
+                            '<div class="suspect-card">'
+                            '<div class="suspect-title">📦 {}</div>'
+                            '<div class="suspect-reason">Sem preço em <b>{}</b> · '
+                            'Outros fornecedores: {}</div>'
+                            '</div>'.format(it["item"], approved, outros or "—"),
+                            unsafe_allow_html=True,
+                        )
+                        absent_names.append(it["item"])
+
+                    if st.button(
+                        "🗑 Remover {} item(s) ausente(s) do aprovado".format(len(absent_from_approved)),
+                        key="btn_remove_absent",
+                    ):
+                        # Filtra o DataFrame removendo as linhas dos itens ausentes
+                        absent_set = set(n.upper() for n in absent_names)
+                        mask = edited_df["Item"].apply(
+                            lambda v: (str(v).strip().upper() not in absent_set)
+                            if not _is_nan(v) else True
+                        )
+                        edited_df = edited_df[mask].reset_index(drop=True)
+                        st.success("{} item(s) removido(s).".format(len(absent_names)))
+                        st.rerun()
+
+        # ── Painel de correções capturadas ─────────────────────────────────────
         with st.expander("🧠 Correções capturadas nesta sessão", expanded=False):
             ai_items = st.session_state.normalized_items
             corrections_so_far = detect_corrections(
