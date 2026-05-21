@@ -614,3 +614,4 @@ def audit_purchase_map(
     except Exception as e:
         logger.error("[Gemini/Auditoria] Erro (nao bloqueante): %s", e)
         return normalized_items
+
