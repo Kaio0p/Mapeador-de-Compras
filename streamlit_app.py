@@ -99,8 +99,58 @@ html, body, [class*="css"], .stApp {
 ::-webkit-scrollbar-thumb { background: var(--surf3); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--tx3); }
 
+/* ══ ESCONDE CHROME NATIVO DO STREAMLIT ══ */
+/* Header bar (hamburguer + deploy + star) */
+[data-testid="stHeader"]              { display: none !important; }
+[data-testid="stToolbar"]             { display: none !important; }
+#MainMenu                             { display: none !important; }
+footer                                { display: none !important; }
+/* Remove padding extra que o header deixa */
+.stApp > header                       { display: none !important; }
+[data-testid="stAppViewContainer"] > section:first-of-type {
+    padding-top: 0 !important;
+}
+
 /* ══ BASE ══ */
 .stApp { background: var(--bg) !important; min-height: 100vh; }
+
+/* ══ TOPBAR PERSONALIZADA — Sticky glass ══ */
+.topbar {
+    position: sticky; top: 0; z-index: 100;
+    height: 52px;
+    display: flex; align-items: center;
+    padding: 0 32px; gap: 14px;
+    background: transparent;
+    border-bottom: 0.5px solid transparent;
+    transition: background 0.35s var(--ease), border-color 0.35s var(--ease);
+    pointer-events: none;
+    margin: 0 -2.5rem; /* cancela o padding do block-container */
+    width: calc(100% + 5rem);
+}
+.topbar > * { pointer-events: auto; }
+.topbar.scrolled {
+    background: rgba(242,242,247,0.72);
+    backdrop-filter: saturate(200%) blur(24px);
+    -webkit-backdrop-filter: saturate(200%) blur(24px);
+    border-bottom-color: rgba(0,0,0,0.07);
+}
+.topbar-title {
+    font-size: 0.9rem; font-weight: 600; letter-spacing: -0.02em; color: var(--tx);
+    opacity: 0; transform: translateY(-6px);
+    transition: opacity 0.28s var(--ease), transform 0.28s var(--ease);
+    flex: 1;
+}
+.topbar.scrolled .topbar-title { opacity: 1; transform: translateY(0); }
+.topbar-step-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: rgba(255,255,255,0.7); border: 0.5px solid var(--ln2);
+    border-radius: var(--r-pill); padding: 4px 14px;
+    font-size: 0.75rem; font-weight: 600; color: var(--tx2);
+    backdrop-filter: blur(12px);
+    opacity: 0; transform: translateY(-4px);
+    transition: opacity 0.28s var(--ease), transform 0.28s var(--ease);
+}
+.topbar.scrolled .topbar-step-pill { opacity: 1; transform: translateY(0); }
 
 /* ══ SIDEBAR PREMIUM — Liquid Glass com gradiente ══ */
 [data-testid="stSidebar"] {
@@ -823,12 +873,44 @@ def _agent_badge(agent: str) -> str:
     return badges.get(agent, "")
 
 
-# ── Page header ───────────────────────────────────────────────────────────────
+# ── Topbar + Page header ──────────────────────────────────────────────────────
+_STEP_TITLES = {
+    1: "Upload dos Orçamentos",
+    2: "Extração via IA",
+    3: "Revisão e Aprovação",
+    4: "Download do Mapa",
+}
+_step_title_now = _STEP_TITLES.get(step, "Mapa de Compras")
+
 st.markdown(
-    '<div class="page-title">'
-    '<span class="page-tag">EBD Compras</span>'
-    'Mapa de Compras'
-    '</div>',
+    # Topbar sticky (transparente, vira glass ao rolar)
+    '<div class="topbar" id="app-topbar">'
+    '  <div class="topbar-title">Mapa de Compras — {}</div>'
+    '  <div class="topbar-step-pill">Passo {} de 4</div>'
+    '</div>'
+    # Script de scroll — adiciona classe .scrolled quando rolar > 48px
+    '<script>'
+    '(function(){'
+    '  var tb = document.getElementById("app-topbar");'
+    '  if(!tb) return;'
+    '  function onScroll(){'
+    '    var y = window.scrollY || document.documentElement.scrollTop'
+    '           || document.body.scrollTop || 0;'
+    '    tb.classList.toggle("scrolled", y > 48);'
+    '  }'
+    '  window.addEventListener("scroll", onScroll, {passive:true});'
+    '  // também observa o container principal do Streamlit'
+    '  var main = document.querySelector("[data-testid=\'stAppViewContainer\']")'
+    '           || document.querySelector(".main");'
+    '  if(main) main.addEventListener("scroll", onScroll, {passive:true});'
+    '  onScroll();'
+    '})();'
+    '</script>'
+    # Título da página
+    '<div class="page-title" style="padding-top:0.6rem;">'
+    '  <span class="page-tag">EBD Compras</span>'
+    '  Mapa de Compras'
+    '</div>'.format(_step_title_now, step),
     unsafe_allow_html=True,
 )
 
