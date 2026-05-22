@@ -340,11 +340,10 @@ div[data-testid="stAlert"] {
     border: 0.5px solid rgba(255,255,255,0.92);
     border-radius: var(--r); padding: 20px 24px; margin-bottom: 12px;
     box-shadow: var(--sh-lg), 0 1px 0 rgba(255,255,255,0.9) inset;
-    transition: box-shadow 0.25s var(--ease), transform 0.2s var(--ease);
+    transition: box-shadow 0.2s var(--ease);
 }
 .glass-card:hover {
-    box-shadow: 0 8px 36px rgba(0,0,0,0.10), 0 1px 0 rgba(255,255,255,0.9) inset;
-    transform: translateY(-1px);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.09), 0 1px 0 rgba(255,255,255,0.9) inset;
 }
 .glass-card .supplier-label {
     font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em;
@@ -357,13 +356,17 @@ div[data-testid="stAlert"] {
     background: linear-gradient(135deg, rgba(255,255,255,0.82) 0%, rgba(255,255,255,0.58) 100%);
     backdrop-filter: blur(20px) saturate(180%);
     border: 0.5px solid rgba(255,255,255,0.9); border-radius: 14px;
-    padding: 10px 20px; margin-bottom: 2rem;
+    padding: 12px 20px; margin-bottom: 1.8rem;
     box-shadow: var(--sh);
+    gap: 0;
 }
-.step-item { display: flex; align-items: center; gap: 8px; flex: 1; position: relative; }
-.step-item:not(:last-child)::after {
-    content: ''; position: absolute; right: 0; top: 50%;
-    transform: translateY(-50%); width: 1px; height: 20px; background: var(--ln);
+.step-item { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.step-sep {
+    flex: 0 0 auto; display: flex; align-items: center; padding: 0 8px;
+}
+.step-sep::after {
+    content: ''; display: block; width: 22px; height: 1px; background: var(--ln2);
+    border-radius: 1px;
 }
 .step-dot {
     width: 26px; height: 26px; border-radius: 50%;
@@ -376,13 +379,25 @@ div[data-testid="stAlert"] {
     box-shadow: 0 0 0 4px rgba(0,122,255,0.18);
 }
 .step-dot.idle   { background: rgba(0,0,0,0.07); color: var(--tx3); }
-.step-text { font-size: 0.82rem; line-height: 1.2; }
-.step-text .num { font-weight: 600; color: var(--tx); letter-spacing: -0.01em; }
-.step-text .sub { font-size: 0.72rem; color: var(--tx3); }
+.step-text { font-size: 0.82rem; line-height: 1.2; min-width: 0; }
+.step-text .num { font-weight: 600; color: var(--tx); letter-spacing: -0.01em; white-space: nowrap; }
+.step-text .sub { font-size: 0.72rem; color: var(--tx3); white-space: nowrap; }
 
-.page-header { margin-bottom: 1.6rem; }
+.page-header { margin-bottom: 0.8rem; }
 .page-header h1 { margin-bottom: 4px !important; }
 .page-header .subtitle { font-size: 0.88rem; color: #636366; letter-spacing: -0.01em; }
+
+/* ── Page title (acima do step tracker) ── */
+.page-title {
+    font-size: 1.75rem; font-weight: 700; letter-spacing: -0.035em;
+    color: var(--tx); line-height: 1.15; margin-bottom: 1rem;
+}
+.page-title .page-tag {
+    display: inline-block; font-size: 0.6rem; font-weight: 700; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--ac); background: var(--ac-bg);
+    border: 0.5px solid var(--ac-bd); border-radius: var(--r-pill);
+    padding: 2px 8px; vertical-align: middle; margin-right: 8px; margin-bottom: 2px;
+}
 
 .section-eyebrow {
     font-size: 0.62rem; font-weight: 700; letter-spacing: 0.1em;
@@ -431,6 +446,55 @@ div[data-testid="stAlert"] {
 .agent-gemini { background: rgba(59,130,246,0.08); border: 0.5px solid rgba(59,130,246,0.22); color: #1D4ED8; }
 .agent-cohere { background: rgba(249,115,22,0.08); border: 0.5px solid rgba(249,115,22,0.22); color: #C2410C; }
 .agent-audit  { background: rgba(239,68,68,0.08);  border: 0.5px solid rgba(239,68,68,0.22);  color: #B91C1C; }
+
+/* ── Upload count badge ── */
+.upload-count {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--ac-bg); border: 0.5px solid var(--ac-bd);
+    border-radius: var(--r-pill); padding: 5px 14px;
+    font-size: 0.82rem; font-weight: 600; color: var(--ac);
+    margin-bottom: 12px;
+}
+.upload-count.complete {
+    background: var(--gr-bg); border-color: rgba(52,199,89,0.22);
+    color: #1A7F37;
+}
+.upload-count.none {
+    background: rgba(0,0,0,0.04); border-color: var(--ln);
+    color: var(--tx3);
+}
+
+/* ── Helper text under disabled button ── */
+.btn-helper {
+    font-size: 0.75rem; color: var(--tx3); margin-top: 6px;
+    display: flex; align-items: center; gap: 4px;
+}
+
+/* ── Back button — visually secondary ── */
+.stButton > button.back-btn,
+button[data-testid="baseButton-secondary"].back-btn {
+    background: transparent !important; color: var(--tx2) !important;
+    border: 0.5px solid var(--ln2) !important;
+    box-shadow: none !important;
+}
+.stButton > button.back-btn:hover {
+    background: rgba(0,0,0,0.04) !important; color: var(--tx) !important;
+    transform: none !important; box-shadow: none !important;
+}
+
+/* ── Step action bar (bottom nav) ── */
+.step-action-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 0 4px; margin-top: 8px;
+    border-top: 0.5px solid var(--ln);
+}
+
+/* ── Section header row ── */
+.section-header {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    margin-bottom: 1rem;
+}
+.section-header-left { display: flex; flex-direction: column; gap: 4px; }
 
 /* ══ STATUS pill com ponto pulsante ══ */
 @keyframes statusPulse {
@@ -497,6 +561,7 @@ div[data-testid="stAlert"] {
 }
 [data-theme="dark"] .glass-card .supplier-name  { color: #F5F5F7 !important; }
 [data-theme="dark"] .glass-card .supplier-label { color: #636366 !important; }
+[data-theme="dark"] .step-sep::after { background: rgba(255,255,255,0.14) !important; }
 [data-theme="dark"] .step-track {
     background: linear-gradient(135deg, rgba(44,44,46,0.82) 0%, rgba(28,28,30,0.58) 100%) !important;
     border: 0.5px solid rgba(255,255,255,0.08) !important;
@@ -543,6 +608,7 @@ def init_state():
         "approved_supplier": None,
         "original_texts": {},
         "original_images": {},
+        "auto_run_extraction": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -730,7 +796,7 @@ def step_tracker():
     steps = [("Upload", "PDFs/Imgs"), ("Extração", "IA"), ("Revisão", "Itens"), ("Download", "Excel")]
     parts = []
     for i, (label, sub) in enumerate(steps, 1):
-        if i < step:    cls = "done";   icon = "✓"
+        if i < step:    cls = "done";   icon = "&#10003;"
         elif i == step: cls = "active"; icon = str(i)
         else:           cls = "idle";   icon = str(i)
         parts.append(
@@ -739,6 +805,8 @@ def step_tracker():
             '<div class="step-text"><div class="num">{label}</div><div class="sub">{sub}</div></div>'
             '</div>'.format(cls=cls, icon=icon, label=label, sub=sub)
         )
+        if i < len(steps):
+            parts.append('<div class="step-sep"></div>')
     st.markdown('<div class="step-track">{}</div>'.format("".join(parts)), unsafe_allow_html=True)
 
 
@@ -756,14 +824,13 @@ def _agent_badge(agent: str) -> str:
 
 
 # ── Page header ───────────────────────────────────────────────────────────────
-st.markdown("""
-<div class="page-header">
-    <h1>Gerador de Mapa de Compras</h1>
-    <div class="subtitle">
-        Faça upload dos orçamentos · Gemini extrai · Cohere normaliza · Gemini audita · Você revisa · Baixe o Excel
-    </div>
-</div>
-""", unsafe_allow_html=True)
+st.markdown(
+    '<div class="page-title">'
+    '<span class="page-tag">EBD Compras</span>'
+    'Mapa de Compras'
+    '</div>',
+    unsafe_allow_html=True,
+)
 
 step_tracker()
 
@@ -778,7 +845,7 @@ if step == 1:
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<p style="color:#636366;font-size:0.88rem;margin-bottom:1.5rem;">'
+        '<p style="color:var(--tx2);font-size:0.88rem;margin-bottom:1.5rem;">'
         'Carregue um PDF ou imagem por fornecedor. '
         'PDFs escaneados são detectados automaticamente e enviados para OCR via Gemini Vision.'
         '</p>',
@@ -829,21 +896,33 @@ if step == 1:
     /* ── Dropzone: preenche o espaço restante do painel ── */
     [data-testid="stFileUploaderDropzone"] {
         flex: 1 !important;
-        min-height: 110px !important;
+        min-height: 130px !important;
         display: flex !important;
         flex-direction: column !important;
         align-items: center !important;
         justify-content: center !important;
-        background: rgba(0,113,227,0.035) !important;
-        border: 1.5px dashed rgba(0,113,227,0.2) !important;
+        background: rgba(0,122,255,0.03) !important;
+        border: 1.5px dashed rgba(0,122,255,0.18) !important;
         border-radius: 12px !important;
         transition: background 0.2s, border-color 0.2s !important;
         cursor: pointer !important;
         gap: 6px !important;
+        position: relative !important;
     }
-    [data-testid="stFileUploaderDropzone"]:hover {
-        background: rgba(0,113,227,0.07) !important;
-        border-color: rgba(0,113,227,0.48) !important;
+    /* Overlay invisível que expande a área de drop para cobrir o card inteiro */
+    [data-testid="stFileUploaderDropzone"]::before {
+        content: '' !important;
+        position: absolute !important;
+        inset: -22px -22px -18px -22px !important;
+        z-index: 0 !important;
+        cursor: pointer !important;
+        border-radius: 20px !important;
+    }
+    [data-testid="stFileUploaderDropzone"] > * { position: relative !important; z-index: 1 !important; }
+    [data-testid="stFileUploaderDropzone"]:hover,
+    [data-testid="stFileUploader"]:hover [data-testid="stFileUploaderDropzone"] {
+        background: rgba(0,122,255,0.07) !important;
+        border-color: rgba(0,122,255,0.45) !important;
     }
 
     /* Ícone e texto da dropzone */
@@ -956,17 +1035,52 @@ if step == 1:
         label_visibility="collapsed",
     )
 
-    st.markdown("<br>", unsafe_allow_html=True)
+    # ── Resumo de uploads + botão avançar ───────────────────────────────────
+    n_uploaded = sum(1 for i in range(n_suppliers) if st.session_state.get("file_{}".format(i)))
+    n_total    = n_suppliers
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+    if n_uploaded == 0:
+        badge_cls  = "none"
+        badge_text = "Nenhum arquivo enviado"
+        badge_icon = "○"
+    elif n_uploaded < n_total:
+        badge_cls  = ""
+        badge_text = "{} de {} arquivo{} enviado{}".format(
+            n_uploaded, n_total,
+            "s" if n_total != 1 else "",
+            "s" if n_uploaded != 1 else "",
+        )
+        badge_icon = "◑"
+    else:
+        badge_cls  = "complete"
+        badge_text = "Todos os {} arquivos enviados".format(n_total)
+        badge_icon = "✓"
+
+    st.markdown(
+        '<div class="upload-count {cls}">{icon}&nbsp;&nbsp;{text}</div>'.format(
+            cls=badge_cls, icon=badge_icon, text=badge_text,
+        ),
+        unsafe_allow_html=True,
+    )
+
     col_btn, _ = st.columns([1, 3])
     with col_btn:
         if st.button(
             "Avançar para extração →",
             type="primary", disabled=not any_uploaded, use_container_width=True,
         ):
-            st.session_state.uploaded_files = uploaded_files
-            st.session_state.ref_text = ref_text
-            st.session_state.step = 2
+            st.session_state.uploaded_files    = uploaded_files
+            st.session_state.ref_text          = ref_text
+            st.session_state.step              = 2
+            st.session_state.auto_run_extraction = True
             st.rerun()
+        if not any_uploaded:
+            st.markdown(
+                '<div class="btn-helper">↑ Faça upload de pelo menos 1 orçamento</div>',
+                unsafe_allow_html=True,
+            )
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1012,11 +1126,20 @@ elif step == 2:
                     qty, unit = 1, "UN"
                 reference_list.append({"item": item_name, "quantidade": qty, "unidade": unit})
 
-    col_btn, _ = st.columns([1, 3])
-    with col_btn:
-        run_extraction = st.button(
-            "Iniciar extração com IA →", type="primary", use_container_width=True
-        )
+    # Consome flag de auto-run (setada pelo botão "Avançar" do passo 1)
+    auto_run = st.session_state.pop("auto_run_extraction", False)
+
+    if not auto_run:
+        # Mostra botão manual apenas se não veio do auto-run
+        col_btn, _ = st.columns([1, 3])
+        with col_btn:
+            manual_run = st.button(
+                "Iniciar extração com IA →", type="primary", use_container_width=True
+            )
+    else:
+        manual_run = False
+
+    run_extraction = auto_run or manual_run
 
     if run_extraction:
         supplier_items  = {}
@@ -1218,10 +1341,12 @@ elif step == 2:
             st.session_state.step = 3
             st.rerun()
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("← Voltar"):
-        st.session_state.step = 1
-        st.rerun()
+    st.markdown('<div class="apple-divider"></div>', unsafe_allow_html=True)
+    col_back, _ = st.columns([1, 4])
+    with col_back:
+        if st.button("← Voltar para upload", use_container_width=True):
+            st.session_state.step = 1
+            st.rerun()
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1487,14 +1612,14 @@ elif step == 3:
             else:
                 st.caption("Nenhuma diferença detectada em relação ao output da IA.")
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        col_back, col_fwd = st.columns([1, 4])
+        st.markdown('<div class="apple-divider"></div>', unsafe_allow_html=True)
+        col_back, col_fwd = st.columns([1, 3])
         with col_back:
-            if st.button("← Voltar"):
+            if st.button("← Voltar para extração", use_container_width=True):
                 st.session_state.step = 2
                 st.rerun()
         with col_fwd:
-            if st.button("✅ Aprovar e Gerar Excel →", type="primary"):
+            if st.button("✅ Aprovar e Gerar Excel →", type="primary", use_container_width=True):
                 final = df_to_items(edited_df, active_suppliers)
 
                 # Salva correções para aprendizado futuro
@@ -1580,20 +1705,26 @@ elif step == 4:
                 if total_autorizado is not None:
                     autorizados_html = (
                         '<div>'
-                        '<div class="supplier-label">Total Autorizado ({})</div>'
-                        '<div style="font-size:2rem;font-weight:700;letter-spacing:-0.04em;color:#0071E3;">R$ {:,.2f}</div>'
+                        '<div style="font-size:0.68rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--tx3);margin-bottom:4px;">Total Autorizado ({})</div>'
+                        '<div style="font-size:2rem;font-weight:700;letter-spacing:-0.04em;color:var(--ac);">R$ {:,.2f}</div>'
                         '</div>'
                     ).format(approved_supplier, total_autorizado)
 
                 st.markdown(
                     '<div class="glass-card" style="margin-bottom:1.5rem;">'
                     '<div style="display:flex;gap:40px;align-items:center;flex-wrap:wrap;">'
-                    '<div><div class="supplier-label">Itens comparados</div>'
-                    '<div style="font-size:2rem;font-weight:700;letter-spacing:-0.04em;">{}</div></div>'
-                    '<div><div class="supplier-label">Fornecedores</div>'
-                    '<div style="font-size:2rem;font-weight:700;letter-spacing:-0.04em;">{}</div></div>'
-                    '<div><div class="supplier-label">Total (menor preço)</div>'
-                    '<div style="font-size:2rem;font-weight:700;letter-spacing:-0.04em;color:#1A7F37;">R$ {:,.2f}</div></div>'
+                    '<div>'
+                    '<div style="font-size:0.68rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--tx3);margin-bottom:4px;">Itens comparados</div>'
+                    '<div style="font-size:2rem;font-weight:700;letter-spacing:-0.04em;color:var(--tx);">{}</div>'
+                    '</div>'
+                    '<div>'
+                    '<div style="font-size:0.68rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--tx3);margin-bottom:4px;">Fornecedores</div>'
+                    '<div style="font-size:2rem;font-weight:700;letter-spacing:-0.04em;color:var(--tx);">{}</div>'
+                    '</div>'
+                    '<div>'
+                    '<div style="font-size:0.68rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--tx3);margin-bottom:4px;">Total (menor preço)</div>'
+                    '<div style="font-size:2rem;font-weight:700;letter-spacing:-0.04em;color:#1A7F37;">R$ {:,.2f}</div>'
+                    '</div>'
                     '{}'
                     '</div></div>'.format(
                         len(final_items), len(active_suppliers), total_menor, autorizados_html
@@ -1664,7 +1795,9 @@ elif step == 4:
                 st.error("Erro ao gerar Excel: {}".format(e))
                 st.exception(e)
 
-    if st.button("← Voltar para revisão"):
-        st.session_state.step = 3
-        st.rerun()
-
+    st.markdown('<div class="apple-divider"></div>', unsafe_allow_html=True)
+    col_back, _ = st.columns([1, 4])
+    with col_back:
+        if st.button("← Voltar para revisão", use_container_width=True):
+            st.session_state.step = 3
+            st.rerun()
