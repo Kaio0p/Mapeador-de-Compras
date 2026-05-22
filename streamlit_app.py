@@ -100,15 +100,16 @@ html, body, [class*="css"], .stApp {
 ::-webkit-scrollbar-thumb:hover { background: var(--tx3); }
 
 /* ══ ESCONDE CHROME NATIVO DO STREAMLIT ══ */
-/* Header bar (hamburguer + deploy + star) */
-[data-testid="stHeader"]              { display: none !important; }
-[data-testid="stToolbar"]             { display: none !important; }
-#MainMenu                             { display: none !important; }
-footer                                { display: none !important; }
-/* Remove padding extra que o header deixa */
-.stApp > header                       { display: none !important; }
-[data-testid="stAppViewContainer"] > section:first-of-type {
-    padding-top: 0 !important;
+/* Só esconde elementos específicos — NÃO usa .stApp > header para evitar esconder sidebar */
+[data-testid="stToolbar"]  { visibility: hidden !important; height: 0 !important; overflow: hidden !important; }
+#MainMenu                  { visibility: hidden !important; }
+footer                     { visibility: hidden !important; height: 0 !important; overflow: hidden !important; }
+/* Reduz o padding do header nativo para zero sem esconder o container */
+[data-testid="stHeader"] {
+    height: 0 !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+    padding: 0 !important;
 }
 
 /* ══ BASE ══ */
@@ -116,53 +117,98 @@ footer                                { display: none !important; }
 
 /* ══ TOPBAR PERSONALIZADA — Sticky glass ══ */
 .topbar {
-    position: sticky; top: 0; z-index: 100;
+    position: sticky; top: 0; z-index: 200;
     height: 52px;
     display: flex; align-items: center;
     padding: 0 32px; gap: 14px;
-    background: transparent;
+    background: rgba(242,242,247,0.0);
     border-bottom: 0.5px solid transparent;
-    transition: background 0.35s var(--ease), border-color 0.35s var(--ease);
-    pointer-events: none;
-    margin: 0 -2.5rem; /* cancela o padding do block-container */
+    transition: background 0.35s var(--ease), border-color 0.35s var(--ease),
+                backdrop-filter 0.35s var(--ease);
+    margin: 0 -2.5rem;
     width: calc(100% + 5rem);
 }
-.topbar > * { pointer-events: auto; }
 .topbar.scrolled {
-    background: rgba(242,242,247,0.72);
+    background: rgba(242,242,247,0.75);
     backdrop-filter: saturate(200%) blur(24px);
     -webkit-backdrop-filter: saturate(200%) blur(24px);
     border-bottom-color: rgba(0,0,0,0.07);
 }
 .topbar-title {
     font-size: 0.9rem; font-weight: 600; letter-spacing: -0.02em; color: var(--tx);
-    opacity: 0; transform: translateY(-6px);
+    opacity: 0; transform: translateY(-5px);
     transition: opacity 0.28s var(--ease), transform 0.28s var(--ease);
     flex: 1;
 }
 .topbar.scrolled .topbar-title { opacity: 1; transform: translateY(0); }
 .topbar-step-pill {
     display: inline-flex; align-items: center; gap: 6px;
-    background: rgba(255,255,255,0.7); border: 0.5px solid var(--ln2);
+    background: rgba(255,255,255,0.8); border: 0.5px solid var(--ln2);
     border-radius: var(--r-pill); padding: 4px 14px;
     font-size: 0.75rem; font-weight: 600; color: var(--tx2);
-    backdrop-filter: blur(12px);
     opacity: 0; transform: translateY(-4px);
     transition: opacity 0.28s var(--ease), transform 0.28s var(--ease);
 }
 .topbar.scrolled .topbar-step-pill { opacity: 1; transform: translateY(0); }
 
-/* ══ SIDEBAR PREMIUM — Liquid Glass com gradiente ══ */
+/* ══ PAGE TITLE — sempre visível ══ */
+.page-title-wrap {
+    padding: 8px 0 4px;
+    animation: fadeSlideIn 0.45s var(--spring) both;
+}
+@keyframes fadeSlideIn {
+    from { opacity: 0; transform: translateY(14px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ══ SIDEBAR — hover slide-in ══ */
+/* A sidebar começa colapsada (estado Streamlit) e aparece suavemente ao hover */
 [data-testid="stSidebar"] {
+    /* Posição e transição suave */
+    transform: translateX(0) !important;
+    transition: transform 0.32s var(--ease),
+                box-shadow 0.32s var(--ease),
+                opacity 0.32s var(--ease) !important;
+    will-change: transform, box-shadow;
+
+    /* Visual liquid glass */
     background: linear-gradient(160deg,
-        rgba(255,255,255,0.88) 0%,
-        rgba(255,255,255,0.72) 60%,
-        rgba(242,242,247,0.80) 100%) !important;
+        rgba(255,255,255,0.90) 0%,
+        rgba(255,255,255,0.75) 60%,
+        rgba(242,242,247,0.82) 100%) !important;
     backdrop-filter: blur(32px) saturate(200%) !important;
     -webkit-backdrop-filter: blur(32px) saturate(200%) !important;
-    border-right: 0.5px solid rgba(255,255,255,0.7) !important;
-    box-shadow: 2px 0 24px rgba(0,0,0,0.04), 1px 0 0 rgba(0,0,0,0.05) !important;
+    border-right: 0.5px solid rgba(255,255,255,0.72) !important;
+    box-shadow: 4px 0 32px rgba(0,0,0,0.08), 1px 0 0 rgba(0,0,0,0.05) !important;
 }
+
+/* Estado colapsado: sidebar recuada e quase invisível */
+[data-testid="stSidebar"][aria-expanded="false"] {
+    transform: translateX(-88%) !important;
+    opacity: 0.0 !important;
+    box-shadow: none !important;
+    pointer-events: none !important;
+}
+
+/* Trigger zone — faixa invisível na borda esquerda que ativa o hover */
+[data-testid="stSidebar"][aria-expanded="false"]::before {
+    content: '' !important;
+    position: fixed !important;
+    left: 0 !important; top: 0 !important; bottom: 0 !important;
+    width: 18px !important;
+    z-index: 9999 !important;
+    cursor: pointer !important;
+    pointer-events: auto !important;
+}
+
+/* Hover na trigger zone OU na própria sidebar mostra a sidebar */
+[data-testid="stSidebar"][aria-expanded="false"]:hover {
+    transform: translateX(0) !important;
+    opacity: 1 !important;
+    box-shadow: 4px 0 32px rgba(0,0,0,0.10), 1px 0 0 rgba(0,0,0,0.05) !important;
+    pointer-events: auto !important;
+}
+
 [data-testid="stSidebar"] > div:first-child { padding-top: 0 !important; }
 
 /* ══ SIDEBAR — brand header ══ */
