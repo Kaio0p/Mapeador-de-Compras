@@ -99,17 +99,20 @@ html, body, [class*="css"], .stApp {
 ::-webkit-scrollbar-thumb { background: var(--surf3); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--tx3); }
 
-/* ══ ESCONDE CHROME NATIVO — SEM AFETAR SIDEBAR ══ */
-/* Usa visibility + height 0 em vez de display none para não sumir sidebar */
+/* ══ ESCONDE CHROME NATIVO (toolbar e menu) — SEM TOCAR NO HEADER ══ */
 [data-testid="stToolbar"] { display: none !important; }
 #MainMenu                 { display: none !important; }
 footer                    { display: none !important; }
-/* Header: mantém no DOM mas com altura zero */
+
+/* Header: transparente mas presente no DOM — preserva o botão de toggle da sidebar */
 [data-testid="stHeader"] {
-    min-height: 0 !important; max-height: 0 !important;
-    height: 0 !important; overflow: hidden !important;
-    padding: 0 !important; margin: 0 !important;
-    border: none !important; background: transparent !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+/* Oculta apenas o conteúdo decorativo do header, mantendo o botão de collapse visível */
+[data-testid="stHeader"] > div:not(:has([data-testid="collapsedControl"])) {
+    visibility: hidden !important;
 }
 
 /* ══ BASE ══ */
@@ -123,7 +126,6 @@ footer                    { display: none !important; }
     background: transparent; border-bottom: 0.5px solid transparent;
     transition: background 0.35s var(--ease), border-color 0.35s var(--ease);
     margin: 0 -2.5rem; width: calc(100% + 5rem);
-    /* NÃO tem pointer-events:none para não atrapalhar cliques abaixo */
 }
 .topbar.scrolled {
     background: rgba(242,242,247,0.78);
@@ -147,10 +149,10 @@ footer                    { display: none !important; }
 }
 .topbar.scrolled .topbar-step-pill { opacity: 1; transform: translateY(0); }
 
-/* ══ SIDEBAR — sempre visível, liquid glass, suave ══ */
-/* Usamos a sidebar SEMPRE EXPANDIDA (initial_sidebar_state="expanded").
-   O efeito hover-slide-in é feito com JS injetado abaixo.
-   O CSS aqui apenas garante o visual premium sem quebrar o layout. */
+/* ══ SIDEBAR — liquid glass, suave ══ */
+/* Deixamos o Streamlit gerenciar show/hide nativamente.
+   Aqui apenas aplicamos o visual premium sem sobrescrever
+   o comportamento de collapse/expand do framework. */
 [data-testid="stSidebar"] {
     background: linear-gradient(160deg,
         rgba(255,255,255,0.92) 0%,
@@ -160,19 +162,6 @@ footer                    { display: none !important; }
     -webkit-backdrop-filter: blur(32px) saturate(200%) !important;
     border-right: 0.5px solid rgba(255,255,255,0.75) !important;
     box-shadow: 2px 0 28px rgba(0,0,0,0.06) !important;
-    transition: transform 0.36s cubic-bezier(0.32,0.72,0,1),
-                opacity 0.36s cubic-bezier(0.32,0.72,0,1) !important;
-}
-/* Sidebar colapsada pelo botão nativo — desliza para fora suavemente */
-[data-testid="stSidebar"][aria-expanded="false"] {
-    transform: translateX(-100%) !important;
-    opacity: 0 !important;
-    box-shadow: none !important;
-}
-/* Sidebar expandida — totalmente visível */
-[data-testid="stSidebar"][aria-expanded="true"] {
-    transform: translateX(0) !important;
-    opacity: 1 !important;
 }
 
 [data-testid="stSidebar"] > div:first-child { padding-top: 0 !important; }
@@ -972,7 +961,6 @@ if step == 1:
     [data-testid="stFileUploader"] label {
         display: block !important;
         font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif !important;
-        /* linha 1: eyebrow em caps — feito via ::before no wrapper */
         color: #1C1C1E !important;
         font-size: 1.05rem !important;
         font-weight: 600 !important;
@@ -1000,7 +988,6 @@ if step == 1:
         gap: 6px !important;
         position: relative !important;
     }
-    /* Overlay invisível que expande a área de drop para cobrir o card inteiro */
     [data-testid="stFileUploaderDropzone"]::before {
         content: '' !important;
         position: absolute !important;
@@ -1084,8 +1071,6 @@ if step == 1:
 
     for i in range(n_suppliers):
         sname    = supplier_names[i] or "Fornecedor {}".format(i + 1)
-        # Label do uploader = eyebrow em caps + nome do fornecedor
-        # O CSS estiliza o label como header do painel
         label = "ORÇAMENTO {}  ·  {}".format(i + 1, sname.upper())
 
         with all_cols[i]:
@@ -1234,16 +1219,13 @@ elif step == 2:
 
     if run_extraction:
         supplier_items  = {}
-        original_texts  = {}   # textos originais para a auditoria do Gemini
-        original_images = {}   # imagens originais para auditoria visual
+        original_texts  = {}
+        original_images = {}
         prefs_ctx       = st.session_state.get("preferences_context", "")
         catalog         = st.session_state.get("catalog") or None
 
         with st.status("Analisando orçamentos…", expanded=True) as status_box:
 
-            # ─────────────────────────────────────────────────────────────────
-            # ETAPA 1 — Extração por fornecedor via Gemini
-            # ─────────────────────────────────────────────────────────────────
             for supplier_name, finfo in uploaded_files.items():
                 pdf_bytes = finfo["bytes"]
                 fname     = finfo["name"]
@@ -1251,7 +1233,6 @@ elif step == 2:
 
                 try:
                     if is_image:
-                        # Imagem direta → Gemini Vision
                         mime = detect_image_mime(pdf_bytes)
                         st.write(
                             "🖼 {} Processando imagem **{}** de **{}**…".format(
@@ -1275,12 +1256,10 @@ elif step == 2:
                         original_images[supplier_name] = [b64]
 
                     else:
-                        # PDF — detecta se é nativo ou escaneado
                         st.write("📄 Lendo PDF de **{}**…".format(supplier_name))
                         text, is_img_pdf = extract_text_from_pdf(pdf_bytes)
 
                         if is_img_pdf:
-                            # PDF escaneado → Gemini Vision (OCR)
                             st.write(
                                 "🔍 {} PDF escaneado detectado — enviando para OCR…".format(
                                     _agent_badge("gemini")
@@ -1293,15 +1272,13 @@ elif step == 2:
                                 catalog=catalog,
                             )
                             original_texts[supplier_name] = "[PDF escaneado — OCR via Gemini Vision]"
-                            original_images[supplier_name] = images[:3]  # guarda para auditoria
+                            original_images[supplier_name] = images[:3]
                         else:
-                            # PDF nativo com texto → Gemini extrai direto do texto
                             st.write(
                                 "👁 {} Extraindo itens de **{}** via Gemini…".format(
                                     _agent_badge("gemini"), supplier_name
                                 )
                             )
-                            # Usa o prompt de visão com texto inline (sem imagem)
                             items = extract_items_from_images(
                                 [],
                                 preferences_context=prefs_ctx,
@@ -1333,9 +1310,6 @@ elif step == 2:
                 st.warning("Nenhum item foi extraído. Verifique os arquivos e tente novamente.")
                 st.stop()
 
-            # ─────────────────────────────────────────────────────────────────
-            # ETAPA 2 — Normalização e Fuzzy Match via Cohere
-            # ─────────────────────────────────────────────────────────────────
             st.write(
                 "⚙ {} Cruzando e normalizando itens entre {} fornecedor(es)… "
                 "_(pode levar até 30s)_".format(
@@ -1377,9 +1351,6 @@ elif step == 2:
                 st.json(supplier_items)
                 st.stop()
 
-            # ─────────────────────────────────────────────────────────────────
-            # ETAPA 3 — Auditoria Final via Gemini (cross-reference visual)
-            # ─────────────────────────────────────────────────────────────────
             st.write(
                 "🔍 {} Auditando mapa — cruzando com imagens originais dos orçamentos…".format(
                     _agent_badge("audit")
@@ -1392,16 +1363,11 @@ elif step == 2:
                     original_images=original_images,
                 )
             except Exception as e_audit:
-                # Auditoria é não-bloqueante: avisa mas continua com os itens normalizados
                 st.warning(
                     "⚠️ Auditoria Gemini falhou (não-bloqueante): {}. "
                     "Os itens foram normalizados mas não auditados.".format(e_audit)
                 )
 
-            # ─────────────────────────────────────────────────────────────────
-            # Finaliza
-            # ─────────────────────────────────────────────────────────────────
-            # ── Guarda obrigatória: não avança se normalização retornou vazio ──
             if not normalized:
                 status_box.update(
                     label="⚠️ Normalização não retornou itens — verifique os arquivos",
@@ -1455,8 +1421,6 @@ elif step == 3:
         "Edite diretamente na tabela e clique em **Aprovar e Gerar Excel** quando estiver satisfeito."
     )
 
-    # Usa edited_items se disponível (preserva edições anteriores do usuário);
-    # cai para normalized_items como fallback.
     items = st.session_state.get("edited_items") or st.session_state.get("normalized_items") or []
 
     if not items:
@@ -1473,7 +1437,6 @@ elif step == 3:
             st.session_state.step = 2
             st.rerun()
     else:
-        # Painel de alertas do Auditor
         suspect_items = [it for it in items if it.get("is_suspect")]
         if suspect_items:
             with st.expander(
@@ -1497,7 +1460,6 @@ elif step == 3:
 
         active_suppliers = [s for s in supplier_names if s]
 
-        # Monta tabela para st.data_editor
         rows = []
         for item in items:
             is_suspect = item.get("is_suspect", False)
@@ -1560,7 +1522,6 @@ elif step == 3:
 
         st.markdown('<div class="apple-divider"></div>', unsafe_allow_html=True)
 
-        # Adicionar item manualmente
         with st.expander("Adicionar item manualmente (e-commerce / 4º fornecedor)", expanded=False):
             c1, c2, c3, c4 = st.columns(4)
             new_name  = c1.text_input("Nome do item")
@@ -1587,9 +1548,7 @@ elif step == 3:
                 edited_df = pd.concat([edited_df, pd.DataFrame([new_row])], ignore_index=True)
                 st.success("'{}' adicionado.".format(new_name))
 
-        # ── Converter DataFrame → lista de itens ─────────────────────────────
         def _is_nan(val) -> bool:
-            """Retorna True para None e float NaN — robusto para valores do data_editor."""
             if val is None:
                 return True
             try:
@@ -1601,7 +1560,6 @@ elif step == 3:
             result = []
             for _, row in df.iterrows():
                 item_val = row.get("Item")
-                # Linhas deletadas no data_editor deixam Item como NaN ou vazio — pular
                 if _is_nan(item_val) or not str(item_val).strip():
                     continue
                 forn_dict = {}
@@ -1615,7 +1573,6 @@ elif step == 3:
                 if und not in ALLOWED_UNITS:
                     und = "UN"
                 id_val = row.get("ID")
-                # ID pode ser NaN quando a linha foi adicionada manualmente sem ID
                 if _is_nan(id_val):
                     id_val = len(result) + 1
                 result.append({
@@ -1629,7 +1586,6 @@ elif step == 3:
                 })
             return result
 
-        # ── Detecção de itens ausentes no fornecedor aprovado ─────────────────
         approved = st.session_state.get("approved_supplier")
         if approved and approved in active_suppliers:
             current_items = df_to_items(edited_df, active_suppliers)
@@ -1677,7 +1633,6 @@ elif step == 3:
                         "🗑 Remover {} item(s) ausente(s) do aprovado".format(len(absent_from_approved)),
                         key="btn_remove_absent",
                     ):
-                        # Filtra o DataFrame removendo as linhas dos itens ausentes
                         absent_set = set(n.upper() for n in absent_names)
                         mask = edited_df["Item"].apply(
                             lambda v: (str(v).strip().upper() not in absent_set)
@@ -1687,7 +1642,6 @@ elif step == 3:
                         st.success("{} item(s) removido(s).".format(len(absent_names)))
                         st.rerun()
 
-        # ── Painel de correções capturadas ─────────────────────────────────────
         with st.expander("🧠 Correções capturadas nesta sessão", expanded=False):
             ai_items = st.session_state.normalized_items
             corrections_so_far = detect_corrections(
@@ -1713,7 +1667,6 @@ elif step == 3:
             if st.button("✅ Aprovar e Gerar Excel →", type="primary", use_container_width=True):
                 final = df_to_items(edited_df, active_suppliers)
 
-                # Salva correções para aprendizado futuro
                 new_corr = detect_corrections(
                     st.session_state.normalized_items, final, active_suppliers
                 )
