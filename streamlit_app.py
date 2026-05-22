@@ -882,13 +882,12 @@ _STEP_TITLES = {
 }
 _step_title_now = _STEP_TITLES.get(step, "Mapa de Compras")
 
-st.markdown(
-    # Topbar sticky (transparente, vira glass ao rolar)
+# Monta a topbar sem .format() para evitar conflito com {} do JavaScript
+_topbar_html = (
     '<div class="topbar" id="app-topbar">'
-    '  <div class="topbar-title">Mapa de Compras — {}</div>'
-    '  <div class="topbar-step-pill">Passo {} de 4</div>'
+    '  <div class="topbar-title">Mapa de Compras &mdash; ' + _step_title_now + '</div>'
+    '  <div class="topbar-step-pill">Passo ' + str(step) + ' de 4</div>'
     '</div>'
-    # Script de scroll — adiciona classe .scrolled quando rolar > 48px
     '<script>'
     '(function(){'
     '  var tb = document.getElementById("app-topbar");'
@@ -899,20 +898,18 @@ st.markdown(
     '    tb.classList.toggle("scrolled", y > 48);'
     '  }'
     '  window.addEventListener("scroll", onScroll, {passive:true});'
-    '  // também observa o container principal do Streamlit'
     '  var main = document.querySelector("[data-testid=\'stAppViewContainer\']")'
     '           || document.querySelector(".main");'
     '  if(main) main.addEventListener("scroll", onScroll, {passive:true});'
     '  onScroll();'
     '})();'
     '</script>'
-    # Título da página
     '<div class="page-title" style="padding-top:0.6rem;">'
     '  <span class="page-tag">EBD Compras</span>'
     '  Mapa de Compras'
-    '</div>'.format(_step_title_now, step),
-    unsafe_allow_html=True,
+    '</div>'
 )
+st.markdown(_topbar_html, unsafe_allow_html=True)
 
 step_tracker()
 
