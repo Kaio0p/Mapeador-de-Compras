@@ -100,56 +100,62 @@ html, body, [class*="css"], .stApp {
 ::-webkit-scrollbar-thumb:hover { background: var(--tx3); }
 
 /* ══ ESCONDE CHROME NATIVO — SEM AFETAR SIDEBAR ══ */
-/* Usa visibility + height 0 em vez de display none para não sumir sidebar */
-[data-testid="stToolbar"] { display: none !important; }
-#MainMenu                 { display: none !important; }
-footer                    { display: none !important; }
-/* Header: mantém no DOM mas com altura zero */
+#MainMenu { display: none !important; }
+footer    { display: none !important; }
+/* Esconde apenas o conteúdo visual do toolbar, NÃO o header inteiro.
+   O botão de toggle da sidebar fica dentro do stHeader — se escondermos
+   o header com height:0/overflow:hidden, o botão some e a sidebar trava. */
+[data-testid="stToolbarActions"] { display: none !important; }
+[data-testid="stDecoration"]     { display: none !important; }
+[data-testid="stStatusWidget"]   { display: none !important; }
+/* Header: transparente + sem borda — estrutura preservada, chrome visual removido */
 [data-testid="stHeader"] {
-    min-height: 0 !important; max-height: 0 !important;
-    height: 0 !important; overflow: hidden !important;
-    padding: 0 !important; margin: 0 !important;
-    border: none !important; background: transparent !important;
+    background: transparent !important;
+    border-bottom: none !important;
+    box-shadow: none !important;
 }
 
 /* ══ BASE ══ */
 .stApp { background: var(--bg) !important; min-height: 100vh; }
 
-/* ══ TOPBAR — sticky glass (aparece ao rolar) ══ */
+/* ══ TOPBAR — sticky glass (sempre visível) ══ */
+/* NOTA: <script> dentro de st.markdown é removido pelo DOMPurify do Streamlit.
+   Por isso a detecção de scroll via JS não executa.
+   A topbar fica sempre no estado "scrolled" para ser visível desde o início. */
 .topbar {
     position: sticky; top: 0; z-index: 200;
     height: 52px; display: flex; align-items: center;
-    padding: 0 32px; gap: 14px;
-    background: transparent; border-bottom: 0.5px solid transparent;
+    padding: 0 28px; gap: 14px;
+    background: rgba(242,242,247,0.88);
+    backdrop-filter: saturate(200%) blur(24px);
+    -webkit-backdrop-filter: saturate(200%) blur(24px);
+    border-bottom: 0.5px solid rgba(0,0,0,0.07);
     transition: background 0.35s var(--ease), border-color 0.35s var(--ease);
-    margin: 0 -2.5rem; width: calc(100% + 5rem);
-    /* NÃO tem pointer-events:none para não atrapalhar cliques abaixo */
+    border-radius: 0 0 var(--r-sm) var(--r-sm);
 }
 .topbar.scrolled {
     background: rgba(242,242,247,0.78);
-    backdrop-filter: saturate(200%) blur(24px);
-    -webkit-backdrop-filter: saturate(200%) blur(24px);
-    border-bottom-color: rgba(0,0,0,0.07);
+    backdrop-filter: saturate(200%) blur(28px);
+    -webkit-backdrop-filter: saturate(200%) blur(28px);
+    border-bottom-color: rgba(0,0,0,0.09);
 }
 .topbar-title {
     font-size: 0.9rem; font-weight: 600; letter-spacing: -0.02em; color: var(--tx);
-    opacity: 0; transform: translateY(-5px); flex: 1;
-    transition: opacity 0.28s var(--ease), transform 0.28s var(--ease);
+    opacity: 1; flex: 1;
 }
-.topbar.scrolled .topbar-title { opacity: 1; transform: translateY(0); }
 .topbar-step-pill {
     display: inline-flex; align-items: center; gap: 6px;
     background: rgba(255,255,255,0.85); border: 0.5px solid var(--ln2);
     border-radius: var(--r-pill); padding: 4px 14px;
     font-size: 0.75rem; font-weight: 600; color: var(--tx2);
-    opacity: 0; transform: translateY(-4px);
-    transition: opacity 0.28s var(--ease), transform 0.28s var(--ease);
+    opacity: 1;
 }
-.topbar.scrolled .topbar-step-pill { opacity: 1; transform: translateY(0); }
 
-/* ══ SIDEBAR — liquid glass, sempre visível ══ */
-/* Deixamos o Streamlit gerenciar show/hide nativamente.
-   Apenas aplicamos o visual premium sem sobrescrever o layout. */
+/* ══ SIDEBAR — sempre visível, liquid glass, suave ══ */
+/* REMOVIDO: os blocos [aria-expanded="false"] { opacity:0; transform:translateX(-100%) }
+   causavam a sidebar travar invisível em certas versões do Streamlit, pois o atributo
+   aria-expanded pode não ser definido como "true" no momento esperado.
+   O Streamlit gerencia nativamente o show/hide — aqui apenas estilizamos. */
 [data-testid="stSidebar"] {
     background: linear-gradient(160deg,
         rgba(255,255,255,0.92) 0%,
@@ -159,6 +165,8 @@ footer                    { display: none !important; }
     -webkit-backdrop-filter: blur(32px) saturate(200%) !important;
     border-right: 0.5px solid rgba(255,255,255,0.75) !important;
     box-shadow: 2px 0 28px rgba(0,0,0,0.06) !important;
+    transition: transform 0.36s cubic-bezier(0.32,0.72,0,1),
+                opacity 0.36s cubic-bezier(0.32,0.72,0,1) !important;
 }
 
 [data-testid="stSidebar"] > div:first-child { padding-top: 0 !important; }
