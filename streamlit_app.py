@@ -50,7 +50,6 @@ from modules.preferences_manager import (
     detect_corrections, merge_corrections, build_prompt_context,
     load_from_supabase, save_to_supabase,
     load_catalog_from_supabase,
-    validate_supabase_credentials,
 )
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -676,16 +675,8 @@ init_state()
 
 # ── Inicialização das APIs ─────────────────────────────────────────────────────
 def _get_sb_creds():
-    """
-    Retorna (url, key) do Supabase apenas se as credenciais forem válidas.
-    Retorna ("", "") se forem placeholders ou não estiverem configuradas.
-    """
     try:
-        url = st.secrets.get("SUPABASE_URL", "") or ""
-        key = st.secrets.get("SUPABASE_KEY", "") or ""
-        if validate_supabase_credentials(url, key):
-            return url.strip(), key.strip()
-        return "", ""
+        return st.secrets.get("SUPABASE_URL", ""), st.secrets.get("SUPABASE_KEY", "")
     except Exception:
         return "", ""
 
@@ -719,12 +710,10 @@ _system_status = _init_apis()
 # ── Auto-carrega preferências e catálogo do Supabase ─────────────────────────
 if not st.session_state.prefs_loaded:
     _sb_url, _sb_key = _get_sb_creds()
-    _supabase_connection_ok = False
     if _sb_url and _sb_key:
         try:
+            from modules.preferences_manager import load_from_supabase
             loaded = load_from_supabase(_sb_url, _sb_key)
-            if loaded.get("corrections") or loaded.get("version"):
-                _supabase_connection_ok = True
             st.session_state.preferences = loaded
             st.session_state.preferences_context = build_prompt_context(loaded)
         except Exception:
@@ -732,13 +721,9 @@ if not st.session_state.prefs_loaded:
         try:
             catalog = load_catalog_from_supabase(_sb_url, _sb_key)
             st.session_state.catalog = catalog or []
-            if catalog:
-                _supabase_connection_ok = True
         except Exception:
             st.session_state.catalog = []
     st.session_state.prefs_loaded = True
-    st.session_state["_supabase_configured"] = bool(_sb_url and _sb_key)
-    st.session_state["_supabase_connected"] = _supabase_connection_ok
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -803,35 +788,6 @@ with st.sidebar:
             gd=gem_dot, gl=gem_label, gs=gem_sub,
             cd=coh_dot, cl=coh_label, cs=coh_sub,
         ),
-        unsafe_allow_html=True,
-    )
-
-    # Supabase status — usa o resultado real da tentativa de conexão
-    _sb_configured = st.session_state.get("_supabase_configured", False)
-    _sb_connected  = st.session_state.get("_supabase_connected", False)
-
-    if _sb_connected:
-        _sb_dot   = "ok"
-        _sb_label = "Supabase conectado"
-        _sb_sub   = "Preferências + Catálogo"
-    elif _sb_configured:
-        _sb_dot   = "warn"
-        _sb_label = "Supabase inacessível"
-        _sb_sub   = "Projeto pausado ou URL incorreta — funciona sem"
-    else:
-        _sb_dot   = "warn"
-        _sb_label = "Supabase não configurado"
-        _sb_sub   = "Opcional — app funciona sem"
-
-    st.markdown(
-        '<span class="sb-section-label">Persistência</span>'
-        '<div class="sb-status-row">'
-        '  <div class="sb-status-dot {sd}"></div>'
-        '  <div class="sb-status-text">'
-        '    <span class="sb-status-label">{sl}</span>'
-        '    <span class="sb-status-sub">{ss}</span>'
-        '  </div>'
-        '</div>'.format(sd=_sb_dot, sl=_sb_label, ss=_sb_sub),
         unsafe_allow_html=True,
     )
 
@@ -1930,4 +1886,3 @@ elif step == 4:
         if st.button("← Voltar para revisão", use_container_width=True):
             st.session_state.step = 3
             st.rerun()
-
