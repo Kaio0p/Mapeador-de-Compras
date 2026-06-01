@@ -23,54 +23,6 @@ from difflib import SequenceMatcher
 
 # ── Supabase REST helpers (sem dependência extra — usa só urllib) ─────────────
 
-def _is_valid_supabase_url(url: str) -> bool:
-    """
-    Valida se a URL do Supabase é real (não placeholder).
-    Placeholders comuns: "https://...supabase.co", "https://your-project.supabase.co"
-    """
-    if not url or not isinstance(url, str):
-        return False
-    url = url.strip()
-    if not url.startswith("https://"):
-        return False
-    # Detecta placeholders comuns
-    placeholder_patterns = ["...", "your-project", "xxx", "example", "<", ">"]
-    for pattern in placeholder_patterns:
-        if pattern in url:
-            return False
-    # Deve ter um hostname real entre https:// e .supabase.co
-    # Formato esperado: https://<ref>.supabase.co
-    if ".supabase.co" in url:
-        host_part = url.replace("https://", "").split(".supabase.co")[0]
-        if not host_part or len(host_part) < 5:
-            return False
-    return True
-
-
-def _is_valid_supabase_key(key: str) -> bool:
-    """
-    Valida se a chave do Supabase é real (não placeholder).
-    Chaves JWT do Supabase começam com 'eyJ' e têm ~200+ caracteres.
-    """
-    if not key or not isinstance(key, str):
-        return False
-    key = key.strip()
-    if not key.startswith("eyJ"):
-        return False
-    # Chave real tem pelo menos 100 caracteres
-    if len(key) < 100:
-        return False
-    # Detecta placeholders
-    if "..." in key:
-        return False
-    return True
-
-
-def validate_supabase_credentials(supabase_url: str, supabase_key: str) -> bool:
-    """Retorna True se ambas as credenciais parecem válidas (não placeholders)."""
-    return _is_valid_supabase_url(supabase_url) and _is_valid_supabase_key(supabase_key)
-
-
 def _sb_headers(supabase_key: str) -> dict:
     return {
         "apikey":        supabase_key,
@@ -82,34 +34,24 @@ def _sb_headers(supabase_key: str) -> dict:
 
 def load_from_supabase(supabase_url: str, supabase_key: str) -> dict:
     """Carrega preferências do Supabase. Retorna dict vazio se não existir ainda."""
-    if not validate_supabase_credentials(supabase_url, supabase_key):
-        logging.debug("[Supabase] Credenciais inválidas/placeholder — ignorando load preferências.")
-        return {"corrections": [], "version": 1}
     url = f"{supabase_url}/rest/v1/mapa_compras_preferencias?id=eq.1&select=data"
     req = urllib.request.Request(url, headers=_sb_headers(supabase_key))
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=8) as resp:
             rows = json.loads(resp.read().decode())
             if rows:
                 return rows[0].get("data", {"corrections": [], "version": 1})
     except urllib.error.HTTPError as e:
-        logging.warning("[Supabase] HTTP %d ao carregar preferências: %s", e.code, e.read().decode())
+        logging.error("[Supabase] HTTP %d ao carregar preferências: %s", e.code, e.read().decode())
     except urllib.error.URLError as e:
-        logging.warning(
-            "[Supabase] Conexão falhou ao carregar preferências: %s. "
-            "Possíveis causas: projeto pausado no Supabase (free tier), URL incorreta, "
-            "ou problema de rede. O app continuará sem preferências salvas.", e.reason
-        )
+        logging.error("[Supabase] Falha de conexão ao carregar preferências: %s", e.reason)
     except Exception as e:
-        logging.warning("[Supabase] Erro ao carregar preferências: %s", e)
+        logging.error("[Supabase] Erro inesperado ao carregar preferências: %s", e)
     return {"corrections": [], "version": 1}
 
 
 def save_to_supabase(supabase_url: str, supabase_key: str, prefs: dict) -> bool:
     """Upsert das preferências no Supabase (cria ou atualiza a linha id=1)."""
-    if not validate_supabase_credentials(supabase_url, supabase_key):
-        logging.debug("[Supabase] Credenciais inválidas/placeholder — ignorando save preferências.")
-        return False
     url     = f"{supabase_url}/rest/v1/mapa_compras_preferencias"
     payload = json.dumps({"id": 1, "data": prefs, "updated_at": "now()"}).encode()
     headers = _sb_headers(supabase_key)
@@ -137,9 +79,6 @@ def load_catalog_from_supabase(supabase_url: str, supabase_key: str) -> list:
 
     Retorna [] em caso de erro — o sistema continua funcionando sem catálogo.
     """
-    if not validate_supabase_credentials(supabase_url, supabase_key):
-        logging.debug("[Supabase] Credenciais inválidas/placeholder — ignorando load catálogo.")
-        return []
     # Tenta buscar todos os campos relevantes (incluindo marca_referencia se existir)
     url = (
         f"{supabase_url}/rest/v1/catalogo_produtos"
@@ -165,15 +104,11 @@ def load_catalog_from_supabase(supabase_url: str, supabase_key: str) -> list:
                 "Tentando sem ela (retrocompatibilidade)..."
             )
             return _load_catalog_without_marca(supabase_url, supabase_key)
-        logging.warning("[Supabase] HTTP %d ao carregar catálogo: %s", e.code, err_body)
+        logging.error("[Supabase] HTTP %d ao carregar catálogo: %s", e.code, err_body)
     except urllib.error.URLError as e:
-        logging.warning(
-            "[Supabase] Conexão falhou ao carregar catálogo: %s. "
-            "Possíveis causas: projeto pausado no Supabase (free tier), URL incorreta, "
-            "ou problema de rede. O app continuará sem catálogo.", e.reason
-        )
+        logging.error("[Supabase] Falha de conexão ao carregar catálogo: %s", e.reason)
     except Exception as e:
-        logging.warning("[Supabase] Erro ao carregar catálogo: %s", e)
+        logging.error("[Supabase] Erro inesperado ao carregar catálogo: %s", e)
     return []
 
 
@@ -492,4 +427,3 @@ def load_preferences(json_bytes: bytes) -> dict:
 
 def preferences_to_json_bytes(prefs: dict) -> bytes:
     return json.dumps(prefs, ensure_ascii=False, indent=2).encode("utf-8")
-
