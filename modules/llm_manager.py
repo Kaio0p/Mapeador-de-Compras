@@ -25,7 +25,6 @@ Secrets esperados em .streamlit/secrets.toml:
 """
 import random
 import logging
-import itertools
 from typing import Optional
 
 import streamlit as st
@@ -107,10 +106,6 @@ def _load_gemini_keys() -> list:
     return []
 
 
-# Índice global para rotação round-robin
-_gemini_key_index = 0
-
-
 def get_random_gemini_key() -> Optional[str]:
     """
     Escolhe uma chave Gemini aleatória do pool.
@@ -122,24 +117,6 @@ def get_random_gemini_key() -> Optional[str]:
         return None
     chosen = random.choice(keys)
     logger.debug("[LLM Manager] Chave Gemini selecionada: ...%s", chosen[-6:])
-    return chosen
-
-
-def get_next_gemini_key() -> Optional[str]:
-    """
-    Rotação round-robin: retorna a PRÓXIMA chave do pool sequencialmente.
-    Garante que cada tentativa use uma chave diferente antes de repetir.
-    Retorna None se nenhuma chave estiver configurada.
-    """
-    global _gemini_key_index
-    keys = _load_gemini_keys()
-    if not keys:
-        logger.error("[LLM Manager] Nenhuma chave Gemini encontrada nos secrets.")
-        return None
-    chosen = keys[_gemini_key_index % len(keys)]
-    _gemini_key_index = (_gemini_key_index + 1) % len(keys)
-    logger.debug("[LLM Manager] Chave Gemini round-robin [%d/%d]: ...%s",
-                 _gemini_key_index, len(keys), chosen[-6:])
     return chosen
 
 
@@ -180,4 +157,3 @@ def get_system_status() -> dict:
         "gemini_key_count":    len(gemini_keys),
         "cohere_key_preview":  "...{}".format(cohere_key[-6:]) if cohere_key else "—",
     }
-
