@@ -719,10 +719,12 @@ _system_status = _init_apis()
 # ── Auto-carrega preferências e catálogo do Supabase ─────────────────────────
 if not st.session_state.prefs_loaded:
     _sb_url, _sb_key = _get_sb_creds()
+    _supabase_connection_ok = False
     if _sb_url and _sb_key:
         try:
-            from modules.preferences_manager import load_from_supabase
             loaded = load_from_supabase(_sb_url, _sb_key)
+            if loaded.get("corrections") or loaded.get("version"):
+                _supabase_connection_ok = True
             st.session_state.preferences = loaded
             st.session_state.preferences_context = build_prompt_context(loaded)
         except Exception:
@@ -730,9 +732,13 @@ if not st.session_state.prefs_loaded:
         try:
             catalog = load_catalog_from_supabase(_sb_url, _sb_key)
             st.session_state.catalog = catalog or []
+            if catalog:
+                _supabase_connection_ok = True
         except Exception:
             st.session_state.catalog = []
     st.session_state.prefs_loaded = True
+    st.session_state["_supabase_configured"] = bool(_sb_url and _sb_key)
+    st.session_state["_supabase_connected"] = _supabase_connection_ok
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -800,12 +806,22 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-    # Supabase status
-    _sb_url_check, _sb_key_check = _get_sb_creds()
-    _sb_ok = bool(_sb_url_check and _sb_key_check)
-    _sb_dot   = "ok" if _sb_ok else "warn"
-    _sb_label = "Supabase conectado" if _sb_ok else "Supabase não configurado"
-    _sb_sub   = "Preferências + Catálogo" if _sb_ok else "Configure SUPABASE_URL e SUPABASE_KEY"
+    # Supabase status — usa o resultado real da tentativa de conexão
+    _sb_configured = st.session_state.get("_supabase_configured", False)
+    _sb_connected  = st.session_state.get("_supabase_connected", False)
+
+    if _sb_connected:
+        _sb_dot   = "ok"
+        _sb_label = "Supabase conectado"
+        _sb_sub   = "Preferências + Catálogo"
+    elif _sb_configured:
+        _sb_dot   = "warn"
+        _sb_label = "Supabase inacessível"
+        _sb_sub   = "Projeto pausado ou URL incorreta — funciona sem"
+    else:
+        _sb_dot   = "warn"
+        _sb_label = "Supabase não configurado"
+        _sb_sub   = "Opcional — app funciona sem"
 
     st.markdown(
         '<span class="sb-section-label">Persistência</span>'
