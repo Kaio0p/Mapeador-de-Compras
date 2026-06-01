@@ -50,6 +50,7 @@ from modules.preferences_manager import (
     detect_corrections, merge_corrections, build_prompt_context,
     load_from_supabase, save_to_supabase,
     load_catalog_from_supabase,
+    validate_supabase_credentials,
 )
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -675,8 +676,16 @@ init_state()
 
 # ── Inicialização das APIs ─────────────────────────────────────────────────────
 def _get_sb_creds():
+    """
+    Retorna (url, key) do Supabase apenas se as credenciais forem válidas.
+    Retorna ("", "") se forem placeholders ou não estiverem configuradas.
+    """
     try:
-        return st.secrets.get("SUPABASE_URL", ""), st.secrets.get("SUPABASE_KEY", "")
+        url = st.secrets.get("SUPABASE_URL", "") or ""
+        key = st.secrets.get("SUPABASE_KEY", "") or ""
+        if validate_supabase_credentials(url, key):
+            return url.strip(), key.strip()
+        return "", ""
     except Exception:
         return "", ""
 
@@ -788,6 +797,25 @@ with st.sidebar:
             gd=gem_dot, gl=gem_label, gs=gem_sub,
             cd=coh_dot, cl=coh_label, cs=coh_sub,
         ),
+        unsafe_allow_html=True,
+    )
+
+    # Supabase status
+    _sb_url_check, _sb_key_check = _get_sb_creds()
+    _sb_ok = bool(_sb_url_check and _sb_key_check)
+    _sb_dot   = "ok" if _sb_ok else "warn"
+    _sb_label = "Supabase conectado" if _sb_ok else "Supabase não configurado"
+    _sb_sub   = "Preferências + Catálogo" if _sb_ok else "Configure SUPABASE_URL e SUPABASE_KEY"
+
+    st.markdown(
+        '<span class="sb-section-label">Persistência</span>'
+        '<div class="sb-status-row">'
+        '  <div class="sb-status-dot {sd}"></div>'
+        '  <div class="sb-status-text">'
+        '    <span class="sb-status-label">{sl}</span>'
+        '    <span class="sb-status-sub">{ss}</span>'
+        '  </div>'
+        '</div>'.format(sd=_sb_dot, sl=_sb_label, ss=_sb_sub),
         unsafe_allow_html=True,
     )
 
