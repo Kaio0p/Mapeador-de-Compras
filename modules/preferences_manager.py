@@ -82,24 +82,34 @@ def _sb_headers(supabase_key: str) -> dict:
 
 def load_from_supabase(supabase_url: str, supabase_key: str) -> dict:
     """Carrega preferências do Supabase. Retorna dict vazio se não existir ainda."""
+    if not validate_supabase_credentials(supabase_url, supabase_key):
+        logging.debug("[Supabase] Credenciais inválidas/placeholder — ignorando load preferências.")
+        return {"corrections": [], "version": 1}
     url = f"{supabase_url}/rest/v1/mapa_compras_preferencias?id=eq.1&select=data"
     req = urllib.request.Request(url, headers=_sb_headers(supabase_key))
     try:
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             rows = json.loads(resp.read().decode())
             if rows:
                 return rows[0].get("data", {"corrections": [], "version": 1})
     except urllib.error.HTTPError as e:
-        logging.error("[Supabase] HTTP %d ao carregar preferências: %s", e.code, e.read().decode())
+        logging.warning("[Supabase] HTTP %d ao carregar preferências: %s", e.code, e.read().decode())
     except urllib.error.URLError as e:
-        logging.error("[Supabase] Falha de conexão ao carregar preferências: %s", e.reason)
+        logging.warning(
+            "[Supabase] Conexão falhou ao carregar preferências: %s. "
+            "Possíveis causas: projeto pausado no Supabase (free tier), URL incorreta, "
+            "ou problema de rede. O app continuará sem preferências salvas.", e.reason
+        )
     except Exception as e:
-        logging.error("[Supabase] Erro inesperado ao carregar preferências: %s", e)
+        logging.warning("[Supabase] Erro ao carregar preferências: %s", e)
     return {"corrections": [], "version": 1}
 
 
 def save_to_supabase(supabase_url: str, supabase_key: str, prefs: dict) -> bool:
     """Upsert das preferências no Supabase (cria ou atualiza a linha id=1)."""
+    if not validate_supabase_credentials(supabase_url, supabase_key):
+        logging.debug("[Supabase] Credenciais inválidas/placeholder — ignorando save preferências.")
+        return False
     url     = f"{supabase_url}/rest/v1/mapa_compras_preferencias"
     payload = json.dumps({"id": 1, "data": prefs, "updated_at": "now()"}).encode()
     headers = _sb_headers(supabase_key)
@@ -127,6 +137,9 @@ def load_catalog_from_supabase(supabase_url: str, supabase_key: str) -> list:
 
     Retorna [] em caso de erro — o sistema continua funcionando sem catálogo.
     """
+    if not validate_supabase_credentials(supabase_url, supabase_key):
+        logging.debug("[Supabase] Credenciais inválidas/placeholder — ignorando load catálogo.")
+        return []
     # Tenta buscar todos os campos relevantes (incluindo marca_referencia se existir)
     url = (
         f"{supabase_url}/rest/v1/catalogo_produtos"
@@ -152,11 +165,15 @@ def load_catalog_from_supabase(supabase_url: str, supabase_key: str) -> list:
                 "Tentando sem ela (retrocompatibilidade)..."
             )
             return _load_catalog_without_marca(supabase_url, supabase_key)
-        logging.error("[Supabase] HTTP %d ao carregar catálogo: %s", e.code, err_body)
+        logging.warning("[Supabase] HTTP %d ao carregar catálogo: %s", e.code, err_body)
     except urllib.error.URLError as e:
-        logging.error("[Supabase] Falha de conexão ao carregar catálogo: %s", e.reason)
+        logging.warning(
+            "[Supabase] Conexão falhou ao carregar catálogo: %s. "
+            "Possíveis causas: projeto pausado no Supabase (free tier), URL incorreta, "
+            "ou problema de rede. O app continuará sem catálogo.", e.reason
+        )
     except Exception as e:
-        logging.error("[Supabase] Erro inesperado ao carregar catálogo: %s", e)
+        logging.warning("[Supabase] Erro ao carregar catálogo: %s", e)
     return []
 
 
