@@ -15,10 +15,9 @@ Este modulo tem duas responsabilidades:
        detectando alucinacoes logicas, matematicas e de unidade.
 
 Anti-Rate-Limit:
-  - Pool de chaves round-robin: cada tentativa usa a PROXIMA chave (get_next_gemini_key)
-  - 1a falha 429: tenta próxima chave com delay mínimo (2s) — resolve se só 1 chave esgotou
-  - 2a+ falhas: backoff exponencial (×1.8) com cap de 65s
-  - Detecção de retry_delay explícito na resposta 429
+  - Pool de chaves: antes de CADA tentativa, rotaciona via get_random_gemini_key()
+  - Retry exponencial com deteccao do campo retry_delay na resposta 429
+  - Backoff com cap de 120s
 """
 import json
 import re
@@ -30,7 +29,7 @@ import google.generativeai as genai
 from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable
 from pydantic import BaseModel, field_validator
 
-from modules.llm_manager import get_random_gemini_key, get_next_gemini_key
+from modules.llm_manager import get_random_gemini_key
 
 logger = logging.getLogger(__name__)
 
@@ -228,20 +227,14 @@ def _call_vision_with_retry(
     base_delay: float = 20.0,
 ) -> str:
     """
-    Chama o Gemini Vision com retry exponencial e rotacao round-robin de chave.
-
-    Estratégia anti-429:
-      1. Usa get_next_gemini_key() (round-robin) para garantir distribuição entre chaves
-      2. Na primeira tentativa com 429, tenta IMEDIATAMENTE com a próxima chave (delay=0)
-         — isso resolve se apenas uma chave esgotou mas as outras estão livres
-      3. A partir da 2ª falha consecutiva, aplica backoff exponencial com cap de 65s
-      4. Se a resposta 429 incluir retry_delay explícito, respeita esse valor
+    Chama o Gemini Vision com retry exponencial e rotacao de chave a cada tentativa.
+    Antes de CADA tentativa: rotaciona a chave via get_random_gemini_key().
     """
     attempt = 0
     delay   = base_delay
 
     while attempt < max_attempts:
-        key = get_next_gemini_key()
+        key = get_random_gemini_key()
         if key:
             genai.configure(api_key=key)
         else:
@@ -254,29 +247,20 @@ def _call_vision_with_retry(
 
         except ResourceExhausted as e:
             attempt += 1
+            wait = _extract_retry_delay(str(e)) or delay
+            logger.warning(
+                "[Gemini Vision] 429 ResourceExhausted (tentativa %d/%d). "
+                "Aguardando %.0fs... (chave rotacionada na proxima tentativa)",
+                attempt, max_attempts, wait,
+            )
             if attempt >= max_attempts:
                 raise RuntimeError(
                     "Limite de requisicoes do Gemini atingido apos {} tentativas.\n\n"
                     "Dicas: adicione mais chaves em GEMINI_API_KEYS nos secrets, "
                     "ou aguarde 1-2 minutos antes de tentar novamente.".format(max_attempts)
                 ) from e
-
-            # Estratégia: na 1ª falha, tenta outra chave imediatamente (sem delay)
-            # A partir da 2ª falha consecutiva, aplica backoff
-            explicit_delay = _extract_retry_delay(str(e))
-            if attempt == 1:
-                # Primeira falha: tenta próxima chave sem espera
-                wait = explicit_delay or 2.0
-            else:
-                wait = explicit_delay or delay
-
-            logger.warning(
-                "[Gemini Vision] 429 (tentativa %d/%d). "
-                "Chave round-robin rotacionada. Aguardando %.0fs...",
-                attempt, max_attempts, wait,
-            )
             time.sleep(wait)
-            delay = min(delay * 1.8, 65.0)
+            delay = min(delay * 2.0, 120.0)
 
         except ServiceUnavailable as e:
             attempt += 1
@@ -285,7 +269,7 @@ def _call_vision_with_retry(
                 attempt, max_attempts, delay,
             )
             time.sleep(delay)
-            delay = min(delay * 1.8, 65.0)
+            delay = min(delay * 2.0, 120.0)
             if attempt >= max_attempts:
                 raise
 
@@ -630,4 +614,3 @@ def audit_purchase_map(
     except Exception as e:
         logger.error("[Gemini/Auditoria] Erro (nao bloqueante): %s", e)
         return normalized_items
-
