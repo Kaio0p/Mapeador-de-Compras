@@ -23,6 +23,54 @@ from difflib import SequenceMatcher
 
 # ── Supabase REST helpers (sem dependência extra — usa só urllib) ─────────────
 
+def _is_valid_supabase_url(url: str) -> bool:
+    """
+    Valida se a URL do Supabase é real (não placeholder).
+    Placeholders comuns: "https://...supabase.co", "https://your-project.supabase.co"
+    """
+    if not url or not isinstance(url, str):
+        return False
+    url = url.strip()
+    if not url.startswith("https://"):
+        return False
+    # Detecta placeholders comuns
+    placeholder_patterns = ["...", "your-project", "xxx", "example", "<", ">"]
+    for pattern in placeholder_patterns:
+        if pattern in url:
+            return False
+    # Deve ter um hostname real entre https:// e .supabase.co
+    # Formato esperado: https://<ref>.supabase.co
+    if ".supabase.co" in url:
+        host_part = url.replace("https://", "").split(".supabase.co")[0]
+        if not host_part or len(host_part) < 5:
+            return False
+    return True
+
+
+def _is_valid_supabase_key(key: str) -> bool:
+    """
+    Valida se a chave do Supabase é real (não placeholder).
+    Chaves JWT do Supabase começam com 'eyJ' e têm ~200+ caracteres.
+    """
+    if not key or not isinstance(key, str):
+        return False
+    key = key.strip()
+    if not key.startswith("eyJ"):
+        return False
+    # Chave real tem pelo menos 100 caracteres
+    if len(key) < 100:
+        return False
+    # Detecta placeholders
+    if "..." in key:
+        return False
+    return True
+
+
+def validate_supabase_credentials(supabase_url: str, supabase_key: str) -> bool:
+    """Retorna True se ambas as credenciais parecem válidas (não placeholders)."""
+    return _is_valid_supabase_url(supabase_url) and _is_valid_supabase_key(supabase_key)
+
+
 def _sb_headers(supabase_key: str) -> dict:
     return {
         "apikey":        supabase_key,
