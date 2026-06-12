@@ -1158,6 +1158,9 @@ if step == 1:
         ):
             st.session_state.uploaded_files    = uploaded_files
             st.session_state.ref_text          = ref_text
+            # Persiste os nomes dos fornecedores da sidebar para uso nos Steps 2-4
+            # (garante que não se perdem se outro usuário/aba recarregar a página)
+            st.session_state.active_suppliers  = [s for s in supplier_names if s]
             st.session_state.step              = 2
             st.session_state.auto_run_extraction = True
             st.rerun()
@@ -1417,6 +1420,9 @@ elif step == 2:
             st.session_state.normalized_items = normalized
             st.session_state.edited_items     = [dict(x) for x in normalized]
             st.session_state.original_texts   = original_texts
+            # Persiste os nomes reais dos fornecedores extraídos dos uploads
+            # para que Steps 3 e 4 não dependam do sidebar (que pode estar vazio em outra sessão)
+            st.session_state.active_suppliers = list(supplier_items.keys())
 
             n_suspect_total = sum(1 for it in normalized if it.get("is_suspect"))
             label_done = "✅ {} itens prontos para revisão".format(len(normalized))
@@ -1470,9 +1476,11 @@ elif step == 3:
         # Painel de alertas do Auditor
         suspect_items = [it for it in items if it.get("is_suspect")]
         if suspect_items:
+            # Se muitos alertas (>5), expander fechado para não travar a UX
+            expand_alerts = len(suspect_items) <= 5
             with st.expander(
                 "🚨 {} alerta(s) do Auditor — clique para revisar".format(len(suspect_items)),
-                expanded=True,
+                expanded=expand_alerts,
             ):
                 for it in suspect_items:
                     reasons = it.get("alert_reason") or []
@@ -1489,7 +1497,18 @@ elif step == 3:
 
         st.caption("⚠️ Unidades permitidas: {}".format(", ".join(ALLOWED_UNITS)))
 
-        active_suppliers = [s for s in supplier_names if s]
+        # Usa os nomes persistidos no session_state (definidos no Step 1/2);
+        # fallback para sidebar caso sessão antiga não tenha o campo
+        active_suppliers = st.session_state.get("active_suppliers") or [s for s in supplier_names if s]
+        if not active_suppliers:
+            st.error(
+                "**Nenhum fornecedor identificado.**\n\n"
+                "Volte ao Passo 1 e preencha os nomes dos fornecedores na barra lateral."
+            )
+            if st.button("← Voltar para upload"):
+                st.session_state.step = 1
+                st.rerun()
+            st.stop()
 
         # Monta tabela para st.data_editor
         rows = []
@@ -1737,7 +1756,9 @@ elif step == 4:
     )
 
     final_items       = st.session_state.get("final_items", [])
-    active_suppliers  = [s for s in supplier_names if s]
+    # Usa os nomes persistidos no session_state (definidos no Step 1/2);
+    # fallback para sidebar caso sessão antiga não tenha o campo
+    active_suppliers  = st.session_state.get("active_suppliers") or [s for s in supplier_names if s]
     approved_supplier = st.session_state.get("approved_supplier")
 
     if not final_items:
@@ -1830,7 +1851,8 @@ elif step == 4:
                 with col_new:
                     if st.button("Novo mapa", use_container_width=True):
                         for k in ["step", "supplier_data", "normalized_items",
-                                  "edited_items", "final_items", "uploaded_files", "original_texts"]:
+                                  "edited_items", "final_items", "uploaded_files",
+                                  "original_texts", "active_suppliers"]:
                             st.session_state[k] = (
                                 1 if k == "step"
                                 else ({} if k in ["supplier_data", "uploaded_files", "original_texts"] else [])
