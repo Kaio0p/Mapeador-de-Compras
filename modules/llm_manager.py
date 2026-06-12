@@ -64,8 +64,9 @@ def get_cohere_client():
         )
 
     # ClientV2 é a API moderna (SDK >= 5.x) — suporta command-a-* e response_format
-    _cohere_client = cohere.ClientV2(api_key=api_key)
-    logger.info("[LLM Manager] Cliente Cohere V2 inicializado com sucesso.")
+    # Timeout de 120s para evitar "read operation timed out" em redes lentas
+    _cohere_client = cohere.ClientV2(api_key=api_key, timeout=120.0)
+    logger.info("[LLM Manager] Cliente Cohere V2 inicializado com sucesso (timeout=120s).")
     return _cohere_client
 
 
