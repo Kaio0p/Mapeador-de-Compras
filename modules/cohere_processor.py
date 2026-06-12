@@ -380,11 +380,14 @@ def _call_cohere_with_retry(
                 delay = min(delay * 2.0, 120.0)
                 continue
 
-            if any(x in err_str for x in ["503", "502", "timeout", "unavailable", "connection"]):
+            if any(x in err_str for x in [
+                "503", "502", "timeout", "timed out", "unavailable",
+                "connection", "connect", "read operation",
+            ]):
                 wait = delay + random.uniform(0, 4)
                 logger.warning(
-                    "[Cohere] Serviço indisponível (tentativa %d/%d). Aguardando %.1fs...",
-                    attempt, max_attempts, wait,
+                    "[Cohere] Serviço indisponível/timeout (tentativa %d/%d): %s. Aguardando %.1fs...",
+                    attempt, max_attempts, type(e).__name__, wait,
                 )
                 if attempt >= max_attempts:
                     raise
@@ -714,6 +717,12 @@ def normalize_and_match(
 
     # Validação Pydantic
     items = _validate_normalized_items(items)
+
+    # ── Reconciliação pós-normalização ────────────────────────────────────────
+    # Verifica se algum fornecedor que claramente cotou um item ficou com null
+    # no resultado do Cohere, e preenche automaticamente com o preço correto.
+    items = _reconcile_missing_prices(items, supplier_items, suppliers)
+
     # Sanity check
     items = _sanity_check_normalized(items)
     # Fuzzy catalog matching (aplica nomes, unidades e marcas do catálogo)
@@ -753,6 +762,105 @@ def _build_catalog_context_for_prompt(catalog: list) -> str:
         "  2. Use a UNIDADE do catálogo\n"
         "  3. Use a MARCA do catálogo (se o item não tiver marca definida)\n"
     )
+
+
+def _reconcile_missing_prices(
+    normalized_items: list,
+    supplier_items: dict,
+    suppliers: list,
+) -> list:
+    """
+    Reconciliação pós-normalização: detecta e preenche preços que o Cohere
+    omitiu (colocou null) quando o fornecedor claramente cotou o item.
+
+    Algoritmo:
+      Para cada item normalizado, para cada fornecedor com preco_unit=null:
+        1. Busca no orçamento bruto desse fornecedor um item com nome similar (fuzzy ≥ 0.70)
+        2. Se encontrar com preço (preco_unitario != null), preenche automaticamente
+        3. Marca o preenchimento na observação para transparência
+
+    Isso corrige o problema mais reportado: "Fornecedor X cotou o item, mas aparece null no mapa".
+    """
+    if not normalized_items or not supplier_items:
+        return normalized_items
+
+    MATCH_THRESHOLD = 0.65  # threshold para considerar que é o mesmo item
+
+    for item in normalized_items:
+        item_name = (item.get("item") or "").upper()
+        if not item_name:
+            continue
+
+        fornecedores = item.get("fornecedores") or {}
+        reconciled_notes = []
+
+        for supplier_name in suppliers:
+            fdata = fornecedores.get(supplier_name)
+            # Só reconcilia se o preço está null
+            if fdata and fdata.get("preco_unit") is not None:
+                continue
+
+            # Busca nos itens brutos desse fornecedor
+            raw_items = supplier_items.get(supplier_name) or []
+            best_match_price = None
+            best_match_score = 0.0
+            best_match_name  = ""
+
+            for raw_item in raw_items:
+                raw_name = (raw_item.get("item") or "").upper()
+                if not raw_name:
+                    continue
+                raw_price = raw_item.get("preco_unitario")
+                if raw_price is None:
+                    continue
+
+                # Calcula similaridade
+                if item_name == raw_name:
+                    score = 1.0
+                elif item_name in raw_name or raw_name in item_name:
+                    longer  = max(len(item_name), len(raw_name))
+                    shorter = min(len(item_name), len(raw_name))
+                    score = max(shorter / longer + 0.15, SequenceMatcher(None, item_name, raw_name).ratio())
+                else:
+                    score = SequenceMatcher(None, item_name, raw_name).ratio()
+
+                if score > best_match_score:
+                    best_match_score = score
+                    best_match_price = raw_price
+                    best_match_name  = raw_name
+
+            # Preenche se encontrou match confiável
+            if best_match_score >= MATCH_THRESHOLD and best_match_price is not None:
+                if fdata is None:
+                    fornecedores[supplier_name] = {"preco_unit": float(best_match_price), "obs": None}
+                else:
+                    fdata["preco_unit"] = float(best_match_price)
+                reconciled_notes.append(
+                    "[Reconciliado] {} tinha null para '{}' — preenchido R${:.2f} de '{}'".format(
+                        supplier_name, item_name, best_match_price, best_match_name
+                    )
+                )
+                logger.debug(
+                    "[Reconciliação] Item '%s' forn '%s': null → R$%.2f (match='%s' score=%.2f)",
+                    item_name, supplier_name, best_match_price, best_match_name, best_match_score,
+                )
+
+        # Atualiza fornecedores e observação se houve reconciliação
+        if reconciled_notes:
+            item["fornecedores"] = fornecedores
+            obs = item.get("observacao") or ""
+            new_obs = " | ".join(reconciled_notes)
+            item["observacao"] = (obs + " | " + new_obs).strip(" | ") if obs else new_obs
+
+    # Contabiliza
+    n_reconciled = sum(
+        1 for item in normalized_items
+        if item.get("observacao") and "[Reconciliado]" in item.get("observacao", "")
+    )
+    if n_reconciled:
+        logger.info("[Reconciliação] %d item(ns) tiveram preços preenchidos automaticamente.", n_reconciled)
+
+    return normalized_items
 
 
 def _parse_response_to_items(raw: str) -> list:
