@@ -571,6 +571,33 @@ def audit_purchase_map(
     if not normalized_items:
         return normalized_items
 
+    # ── Verifica se temos dados reais para auditar ────────────────────────────
+    # Se todos os textos são placeholders e não há imagens, a auditoria não
+    # tem material de referência e gerará falsos positivos massivos.
+    _PLACEHOLDER_PREFIXES = ("[Imagem", "[PDF escaneado")
+
+    has_real_texts = False
+    if original_texts and isinstance(original_texts, dict):
+        for texto in original_texts.values():
+            if texto and isinstance(texto, str) and not texto.startswith(_PLACEHOLDER_PREFIXES):
+                has_real_texts = True
+                break
+
+    has_real_images = bool(
+        original_images and isinstance(original_images, dict)
+        and any(
+            isinstance(imgs, list) and len(imgs) > 0
+            for imgs in original_images.values()
+        )
+    )
+
+    if not has_real_texts and not has_real_images:
+        # Sem dados originais reais → auditoria não é possível, retorna sem modificar
+        logger.info(
+            "[Gemini/Auditoria] Ignorada — nenhum texto real ou imagem disponível para cross-reference."
+        )
+        return normalized_items
+
     # Prepara versao simplificada para o prompt (sem catalog_match/score)
     items_for_audit = []
     for item in normalized_items:
@@ -587,18 +614,24 @@ def audit_purchase_map(
         }
         items_for_audit.append(simplified)
 
-    # Prepara texto dos orcamentos originais
+    # Prepara texto dos orcamentos originais (exclui placeholders)
     if original_texts and isinstance(original_texts, dict):
-        textos_originais = "\n\n".join(
+        textos_reais = [
             "--- ORCAMENTO: {} ---\n{}".format(nome, texto[:8000])
             for nome, texto in original_texts.items()
-            if texto and isinstance(texto, str)
-        )
+            if texto and isinstance(texto, str) and not texto.startswith(_PLACEHOLDER_PREFIXES)
+        ]
+        textos_originais = "\n\n".join(textos_reais) if textos_reais else ""
     else:
+        textos_originais = ""
+
+    # Se não há texto mas há imagens, informa ao auditor para focar nas imagens
+    if not textos_originais:
         textos_originais = (
-            "Textos originais nao disponibilizados. "
-            "Audite com base no conhecimento semantico de precos e unidades tipicos "
-            "para itens de limpeza e escritorio no Brasil."
+            "Textos nao disponiveis (PDFs escaneados). "
+            "Use APENAS as imagens anexadas para verificar precos. "
+            "Sinalize SOMENTE erros que voce pode CONFIRMAR visualmente nas imagens. "
+            "Na duvida, NAO sinalize."
         )
 
     try:
